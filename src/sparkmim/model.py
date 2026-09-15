@@ -18,7 +18,7 @@ Métodos:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from pyspark.sql import DataFrame
 
@@ -31,6 +31,8 @@ class SelectorModel:
     criterion: str
     n_rows: int
     target: str
+    # Wall-time (s) por etapa, si se midió (benchmark). Vacío si no.
+    timings_: Dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
         if len(self.selected_features) != len(self.scores_):

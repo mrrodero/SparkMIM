@@ -13,7 +13,8 @@ Variantes: ``JMIMSelector`` (default), ``CMIMSelector``, ``MRMRSelector``,
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+import time
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 from pyspark.sql import DataFrame, SparkSession
@@ -65,22 +66,31 @@ class InfoSelector:
     def fit(self, df: DataFrame) -> SelectorModel:
         config = self.config
         target_col = config.target
+        timings: Dict[str, float] = {}
+        t0 = time.perf_counter()
 
         # Modo KSG (opcional): subsample al driver + MI/CMI por kNN (sin binning).
         if config.estimator == "ksg":
-            return self._fit_ksg(df, config)
+            model = self._fit_ksg(df, config)
+            model.timings_ = {"total": time.perf_counter() - t0}
+            return model
 
         # Etapa 0: esquema + preprocesado.
+        t = time.perf_counter()
         prepared = prepare(df, config)
+        timings["etapa0"] = time.perf_counter() - t
         df_prep = prepared.df_prep
         schema = prepared.schema
         n_rows = prepared.n_rows
 
         # Etapa 1: screening → candidatas.
+        t = time.perf_counter()
         screen_result = screen(df_prep, schema, config)
+        timings["etapa1"] = time.perf_counter() - t
         candidates = list(screen_result.candidates)
         K = len(candidates)
         if K == 0:
+            timings["total"] = time.perf_counter() - t0
             return SelectorModel(
                 selected_features=[],
                 scores_=[],
@@ -88,6 +98,7 @@ class InfoSelector:
                 criterion=self.criterion,
                 n_rows=n_rows,
                 target=target_col,
+                timings_=timings,
             )
 
         # Columnas y códigos de las candidatas (orden por MI descendente).
@@ -105,16 +116,23 @@ class InfoSelector:
         candidate_n_codes = candidate_n_codes[:K]
 
         # Etapa 2: tablas conjuntas (subsample) → TableCache.
+        t = time.perf_counter()
         cache = self._build_cache(
             df_prep, candidate_cols, target_col, candidate_n_codes, n_y,
             screen_result, candidates, config,
         )
+        timings["etapa2"] = time.perf_counter() - t
 
         # Etapa 3: selección greedy (driver).
-        return self._greedy(
+        t = time.perf_counter()
+        model = self._greedy(
             df_prep, feature_names, candidates, candidate_cols, candidate_n_codes,
             n_y, cache, screen_result, config, n_rows,
         )
+        timings["etapa3"] = time.perf_counter() - t
+        timings["total"] = time.perf_counter() - t0
+        model.timings_ = timings
+        return model
 
     # ------------------------------------------------------------------
     # Etapa 2: caché de tablas conjuntas.
