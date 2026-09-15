@@ -18,6 +18,7 @@ __all__ = [
     "joint_entropy_from_counts",
     "mutual_information",
     "conditional_mi",
+    "conditional_mi_multi",
 ]
 
 
@@ -109,5 +110,36 @@ def conditional_mi(table_xyz: np.ndarray) -> float:
         + _log_nonzero(pz)[None, None, :]
         - _log_nonzero(pxz)[:, None, :]
         - _log_nonzero(pyz)[None, :, :]
+    )
+    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
+
+
+def conditional_mi_multi(table: np.ndarray) -> float:
+    """CMI con varios condicionantes: ``CMI(X;Y|Z1,...,Zk)``.
+
+    Args:
+        table: tabla de conteos con ejes ``(X, Y, Z1, ..., Zk)`` (dim ≥ 3).
+            Para ``k=1`` es equivalente a :func:`conditional_mi`.
+
+    Returns:
+        CMI en nats (≥ 0 salvo error numérico).
+    """
+    table = np.asarray(table, dtype=np.float64)
+    if table.ndim < 3:
+        raise ValueError(f"table debe tener ≥ 3 dims, tiene {table.ndim}")
+    n = table.sum()
+    if n == 0:
+        return 0.0
+    p = table / n
+    pz = p.sum(axis=(0, 1))   # (Z1, ..., Zk)
+    pxz = p.sum(axis=1)       # (X, Z1, ..., Zk)
+    pyz = p.sum(axis=0)       # (Y, Z1, ..., Zk)
+    # Broadcasting: pz gana 2 ejes al frente (X, Y); pxz gana 1 eje tras X;
+    # pyz gana 1 eje al frente (X). Idéntico al caso 3D (k=1).
+    terms = p * (
+        _log_nonzero(p)
+        + _log_nonzero(pz)[None, None]
+        - _log_nonzero(pxz)[:, None]
+        - _log_nonzero(pyz)[None, :]
     )
     return float(np.where(np.isfinite(terms), terms, 0.0).sum())
