@@ -16,6 +16,9 @@ from .info.entropy import (
     conditional_mi_multi,
 )
 
+# Estimador KSG opcional (Hito 5).
+from .info.ksg import ksg_cmi, ksg_mi
+
 # Configuración, esquema, preprocesado, screening (hitos 2-3).
 from .config import SelectorConfig
 from .model import SelectorModel
@@ -35,6 +38,9 @@ __all__ = [
     "mutual_information",
     "conditional_mi",
     "conditional_mi_multi",
+    # KSG
+    "ksg_mi",
+    "ksg_cmi",
     # config / model / selectores
     "SelectorConfig",
     "SelectorModel",
