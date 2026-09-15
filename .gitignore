@@ -1,0 +1,33 @@
+# Entorno Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Spark
+derby/
+spark-logs/
+metastore_db/
+spark-events/
+
+# JDK local (Temurin 17) y artefactos de instalación
+jdk17/
+_pipcache/
+_pip_test/
+_pyspark-*.tar.gz
+_arrowtest/
+install*.log
+spark_err*.log
+pip_verbose.log
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

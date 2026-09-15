@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparkmim"
+version = "0.1.0"
+description = "Framework PySpark distribuido de feature selection informacional (JMIM/CMIM)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "SparkMIM" }]
+keywords = ["feature-selection", "mutual-information", "JMIM", "CMIM", "pyspark", "distributed"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "pyspark>=3.5",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "pyarrow>=4.0",
+]
+
+[project.optional-dependencies]
+xgb = ["xgboost4j-spark>=3.0"]
+lgbm = ["lightgbm4j-spark>=3.0"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
