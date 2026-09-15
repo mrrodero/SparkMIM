@@ -19,6 +19,17 @@ from .info.entropy import (
 # Estimador KSG opcional (Hito 5).
 from .info.ksg import ksg_cmi, ksg_mi
 
+# Evaluación agnóstica al modelo (Hito 6).
+from .evaluate import (
+    EvaluationReport,
+    auc_binary,
+    auc_macro,
+    efficiency_curve,
+    report,
+    r2_score,
+    train_and_evaluate,
+)
+
 # Configuración, esquema, preprocesado, screening (hitos 2-3).
 from .config import SelectorConfig
 from .model import SelectorModel
@@ -41,6 +52,14 @@ __all__ = [
     # KSG
     "ksg_mi",
     "ksg_cmi",
+    # evaluación
+    "EvaluationReport",
+    "auc_binary",
+    "auc_macro",
+    "r2_score",
+    "report",
+    "efficiency_curve",
+    "train_and_evaluate",
     # config / model / selectores
     "SelectorConfig",
     "SelectorModel",

@@ -47,10 +47,19 @@ class SelectorModel:
         return df.select(*cols)
 
     def report(self, df, model: str = "gbt"):
-        """Evaluación agnóstica al modelo (AUC/R² vs baseline).
+        """Evaluación agnóstica al modelo (AUC/R² vs baseline + curva de eficiencia).
 
-        Se implementa en el Hito 6 (``sparkmim.evaluate``).
+        Entrena ``model`` (``"gbt"`` por defecto, ``"xgboost"``/``"lightgbm"``
+        como extras) sobre las features seleccionadas y sobre todas las
+        features (baseline), y devuelve un ``EvaluationReport``.
         """
-        raise NotImplementedError(
-            "report() se implementa en el Hito 6 (sparkmim.evaluate)"
+        from .evaluate import report as _report
+
+        ranking_names = [name for name, _ in self.ranking_]
+        return _report(
+            df,
+            selected_features=self.selected_features,
+            ranking=ranking_names,
+            target_col=self.target,
+            model_name=model,
         )
