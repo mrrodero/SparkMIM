@@ -44,9 +44,9 @@ El script `git-flow.ps1` envuelve los comandos:
 
 1. Cuando `develop` refleja el estado deseado del próximo release:
    `.\git-flow.ps1 release start 0.2.0`.
-2. En `release-0.2.0`: actualizar la versión en `pyproject.toml` (y
-   `CHANGELOG` si existe) y commitear. **No añadir features grandes aquí**
-   (solo bug fixes y metadatos).
+2. En `release-0.2.0`: actualizar la versión en `pyproject.toml` y la
+   entrada en `CHANGELOG.md` (ver formato abajo), y commitear. **No añadir
+   features grandes aquí** (solo bug fixes y metadatos).
 3. Cuando la release está lista: `.\git-flow.ps1 release finish 0.2.0`.
    - Merge `--no-ff` en `main` + tag `v0.2.0`.
    - Merge `--no-ff` en `develop` (para que el fix/meta entre en el siguiente release).
@@ -55,7 +55,8 @@ El script `git-flow.ps1` envuelve los comandos:
 ## Flujo de un hotfix
 
 1. Bug crítico en producción: `.\git-flow.ps1 hotfix start 0.1.1` (desde `main`).
-2. Corregir, actualizar la versión (patch) y commitear.
+2. Corregir, actualizar la versión (patch), la entrada en `CHANGELOG.md` y
+   commitear.
 3. `.\git-flow.ps1 hotfix finish 0.1.1`.
    - Merge `--no-ff` en `main` + tag `v0.1.1`.
    - Merge `--no-ff` en `develop` (para que el fix entre en el siguiente release).
@@ -72,6 +73,10 @@ El script `git-flow.ps1` envuelve los comandos:
 - **Tests:** cada feature/release/hotfix debe dejar la suite en verde antes de
   mergear.
 - **Tags:** anotados (`git tag -a`), prefijo `v`.
+- **Changelog:** `CHANGELOG.md` (formato [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)).
+  Cada release/hotfix añade su entrada **en la rama de soporte** (`release-*`/
+  `hotfix-*`), junto con el bump de versión. Los cambios en `develop` que aún
+  no están en una release se acumulan bajo `[Unreleased]`.
 
 ## Estado actual
 
