@@ -81,4 +81,5 @@ El script `git-flow.ps1` envuelve los comandos:
 ## Estado actual
 
 - `main` = `v0.1.0` (framework completo, hitos 0–7).
-- `develop` = mismo estado (listo para nuevas features).
+- `develop` = `v0.1.0` + reorganización de documentación y `CHANGELOG.md`
+  (listo para nuevas features).
