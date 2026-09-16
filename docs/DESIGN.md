@@ -3,8 +3,8 @@
 Diseño completo: matemáticas, justificación frente a SOTA y análisis de
 complejidad.
 
-> **English:** see [docs/DESIGN.en.md](docs/DESIGN.en.md).
-> **Quickstart/API:** [README.md](README.md).
+> **English:** see [DESIGN.en.md](DESIGN.en.md).
+> **Quickstart/API:** [README.md](../README.md).
 
 ---
 

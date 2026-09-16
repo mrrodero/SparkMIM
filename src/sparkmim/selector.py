@@ -1,6 +1,6 @@
 """InfoSelector + variantes (Hito 4): orquesta las etapas 0-3.
 
-Flujo de ``fit(df)`` (PLAN_IMPLEMENTACION.md §6):
+Flujo de ``fit(df)`` (docs/DESIGN.md §2):
 - **Etapa 0**: esquema + preprocesado (``prepare``) → ``df_prep``.
 - **Etapa 1**: screening univariante (``screen``) → candidatas C.
 - **Etapa 2**: caché de tablas conjuntas (``build_joint_tables`` + ``TableCache``)

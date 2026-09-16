@@ -1,6 +1,6 @@
 """Etapa 1 — Screening univariante (un pase sobre ``df_prep``) + significancia.
 
-Flujo (PLAN_IMPLEMENTACION.md §6, Etapa 1):
+Flujo (docs/DESIGN.md §2, Etapa 1):
 
 1. ``build_screening_tables`` (UN ``mapInPandas``) + ``dense_from_screening``
    → N tablas densas ``(n_x, n_y)`` en el driver.

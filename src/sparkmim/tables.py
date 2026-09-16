@@ -1,6 +1,6 @@
 """Builders de tablas de conteo en pase único (``mapInPandas``) + caché en driver.
 
-Diseño (ver PLAN_IMPLEMENTACION.md §6):
+Diseño (ver docs/DESIGN.md §2):
 - **Etapa 1 (screening):** UN ``mapInPandas`` sobre ``df_prep`` emite las celdas
   no nulas de ``crosstab(X_i, Y)`` por feature → un único ``groupBy`` → tablas
   densas (n_x, n_y) en el driver.

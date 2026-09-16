@@ -8,7 +8,7 @@ opcional para variables continuas. Evaluación integrada agnóstica al modelo
 (GBT/XGBoost/LightGBM en Spark).
 
 > **English:** see [README.en.md](README.en.md).
-> **Diseño completo:** [DESIGN.md](DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
+> **Diseño completo:** [docs/DESIGN.md](docs/DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
 
 ---
 
@@ -94,7 +94,7 @@ model = sel.fit(df)
 
 ### `sparkmim.InfoSelector(criterion="jmim", **config_kwargs)`
 
-Orquesta las etapas 0–3 (ver [DESIGN.md](DESIGN.md)). `fit(df) -> SelectorModel`.
+Orquesta las etapas 0–3 (ver [docs/DESIGN.md](docs/DESIGN.md)). `fit(df) -> SelectorModel`.
 
 ### `sparkmim.SelectorModel`
 
@@ -200,8 +200,9 @@ sparkmim/
 │   ├── synthetic.py     # generador sintético
 │   └── bench_scale.py   # benchmark de escala
 ├── tests/               # pytest (unitarios + e2e)
-├── DESIGN.md            # diseño (ES)
-├── docs/DESIGN.en.md    # diseño (EN)
+├── docs/
+│   ├── DESIGN.md        # diseño (ES)
+│   └── DESIGN.en.md     # diseño (EN)
 ├── README.md            # (ES)
 └── README.en.md         # (EN)
 ```

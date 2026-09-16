@@ -8,7 +8,7 @@ variables. Integrated model-agnostic evaluation (GBT/XGBoost/LightGBM in
 Spark).
 
 > **Español:** see [README.md](README.md).
-> **Full design:** [DESIGN.md](DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
+> **Full design:** [docs/DESIGN.md](docs/DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
 
 ---
 
@@ -201,8 +201,9 @@ sparkmim/
 │   ├── synthetic.py     # synthetic generator
 │   └── bench_scale.py   # scale benchmark
 ├── tests/               # pytest (unit + e2e)
-├── DESIGN.md            # design (ES)
-├── docs/DESIGN.en.md    # design (EN)
+├── docs/
+│   ├── DESIGN.md        # design (ES)
+│   └── DESIGN.en.md     # design (EN)
 ├── README.md            # (ES)
 └── README.en.md         # (EN)
 ```

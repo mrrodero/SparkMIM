@@ -2,7 +2,7 @@
 
 Full design: math, justification vs SOTA, and complexity analysis.
 
-> **Español:** see [DESIGN.md](../DESIGN.md).
+> **Español:** see [DESIGN.md](DESIGN.md).
 > **Quickstart/API:** [README.en.md](../README.en.md).
 
 ---
