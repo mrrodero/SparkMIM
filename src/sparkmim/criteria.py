@@ -1,12 +1,12 @@
 """Criterios informacionales greedy (Hito 4, etapa 3).
 
-Criterios rápidos (solo aritmética sobre la ``TableCache`` de la etapa 2 y el
-MI univariante de la etapa 1, O(1) por candidata en el driver):
+Criterios rápidos (aritmética pura sobre el oráculo de información, sin
+acceso a la estructura de datos subyacente):
 
-- ``mrmr``: ``MI(X;Y) − (1/|S|)·Σ_{Xi∈S} MI(X;Xi)``   [tablas par]
-- ``mim``:  ``MI(X;Y) − Σ_{Xi∈S} MI(X;Xi)``             [tablas par]
-- ``jmi``:  ``Σ_{Xi∈S} CMI(X;Y|Xi)``                     [tablas triple]
-- ``jmim``: ``min_{Xi∈S} CMI(X;Y|Xi)``                   [tablas triple] (default)
+- ``mrmr``: ``MI(X;Y) − (1/|S|)·Σ_{Xi∈S} MI(X;Xi)``   [``mi_pair``]
+- ``mim``:  ``MI(X;Y) − Σ_{Xi∈S} MI(X;Xi)``             [``mi_pair``]
+- ``jmi``:  ``Σ_{Xi∈S} CMI(X;Y|Xi)``                     [``cmi_single``]
+- ``jmim``: ``min_{Xi∈S} CMI(X;Y|Xi)``                   [``cmi_single``] (default)
 
 ``cmim`` es el único que requiere un pase ``mapInPandas`` extra por ronda:
 construye la conjunta ``(X, Y, S_m)`` sobre el subsample con ``S_m`` = top-m
@@ -16,7 +16,7 @@ por MI univariante (m=2). Ver :func:`cmim_scores`. Aproximación documentada
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence
+from typing import TYPE_CHECKING, Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,52 +29,31 @@ from .info.entropy import (
     mutual_information,
 )
 
+if TYPE_CHECKING:
+    from .oracles import InformationOracle
+
 __all__ = ["CRITERIA", "criterion_score", "cmim_scores"]
 
 CRITERIA = ("mrmr", "mim", "jmi", "jmim", "cmim")
 
 
-def _triple_oriented(i: int, j: int, cache) -> np.ndarray:
-    """Tabla triple con ``X_i`` en eje 0, ``X_j`` en eje 1, ``Y`` en eje 2.
-
-    ``cache.triple(i, j)`` devuelve la tabla en orden canónico ``(min, max)``;
-    si ``i > j`` se intercambian los ejes 0 y 1.
-    """
-    t = cache.triple(i, j)
-    if i < j:
-        return t
-    return t.transpose(1, 0, 2)
-
-
-def _mi_xy(i: int, cache) -> float:
-    return mutual_information(cache.uni(i))
-
-
-def _mi_pair(i: int, j: int, cache) -> float:
-    """MI(X_i; X_j): simétrica, la orientación del par canónico no importa."""
-    return mutual_information(cache.pair(i, j))
-
-
-def _cmi_y_given(i: int, j: int, cache) -> float:
-    """CMI(X_i; Y | X_j) desde la triple (n_i, n_j, n_y)."""
-    t = _triple_oriented(i, j, cache)  # (n_i, n_j, n_y)
-    return conditional_mi(t.transpose(0, 2, 1))  # → (n_i, n_y, n_j)
-
-
 def criterion_score(
     x: int,
     S: Sequence[int],
-    cache,
+    oracle: "InformationOracle",
     mi_xy: np.ndarray,
     criterion: str,
 ) -> float:
     """Puntaje del criterio rápido para la candidata ``x`` dado el conjunto ``S``.
 
+    Aritmética pura sobre el oráculo de información: no toca la estructura
+    de datos subyacente (tablas conjuntas, arrays crudos).
+
     Args:
         x: índice de la candidata (0..K-1), ``x ∉ S``.
         S: lista de índices ya seleccionados (0..K-1).
-        cache: ``TableCache`` de la etapa 2.
-        mi_xy: array ``MI(X_i; Y)`` por candidata (etapa 1).
+        oracle: oráculo de información (``InformationOracle``).
+        mi_xy: array ``MI(X_i; Y)`` por candidata.
         criterion: ``"mrmr" | "mim" | "jmi" | "jmim"``.
 
     Returns:
@@ -83,21 +62,21 @@ def criterion_score(
     if criterion == "mrmr":
         if not S:
             return float(mi_xy[x])
-        redundancy = float(np.mean([_mi_pair(x, s, cache) for s in S]))
+        redundancy = float(np.mean([oracle.mi_pair(x, s) for s in S]))
         return float(mi_xy[x] - redundancy)
     if criterion == "mim":
         if not S:
             return float(mi_xy[x])
-        redundancy = float(sum(_mi_pair(x, s, cache) for s in S))
+        redundancy = float(sum(oracle.mi_pair(x, s) for s in S))
         return float(mi_xy[x] - redundancy)
     if criterion == "jmi":
         if not S:
             return float(mi_xy[x])
-        return float(sum(_cmi_y_given(x, s, cache) for s in S))
+        return float(sum(oracle.cmi_single(x, s) for s in S))
     if criterion == "jmim":
         if not S:
             return float(mi_xy[x])
-        return float(min(_cmi_y_given(x, s, cache) for s in S))
+        return float(min(oracle.cmi_single(x, s) for s in S))
     raise ValueError(f"criterio no soportado por criterion_score: {criterion!r}")
 
 
