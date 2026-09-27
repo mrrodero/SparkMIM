@@ -290,7 +290,7 @@ class InfoSelector:
         use_cmim_pass = self.criterion == "cmim" and config.cmim_approx != "max_min"
         crit = None if use_cmim_pass else ("jmim" if self.criterion == "cmim" else self.criterion)
         m = min(config.cmim_m, K)
-        s_m = [candidates[int(i)] for i in np.argsort(-mi_xy, kind="stable")[:m]] if use_cmim_pass else []
+        s_m = [int(i) for i in np.argsort(-mi_xy, kind="stable")[:m]] if use_cmim_pass else []
 
         mi_pair_cache: dict = {}
         cmi_cache: dict = {}
@@ -316,7 +316,7 @@ class InfoSelector:
         scores: List[float] = []
         while len(selected) < config.max_features and len(selected) < K:
             if not selected:
-                best = candidates[int(np.argmax(mi_xy))]
+                best = int(np.argmax(mi_xy))
                 best_score = float(mi_xy[best])
             elif use_cmim_pass:
                 best = -1

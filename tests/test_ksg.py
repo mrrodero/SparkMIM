@@ -148,6 +148,96 @@ def test_ksg_mrmr_selects_informative(df):
     assert "x2" not in model.selected_features
 
 
+# --- Regresión: índice global vs posición en candidatas (modo KSG) ---
+#
+# El greedy KSG trabaja con índices globales de feature (0..N-1), pero
+# ``candidates`` es una lista de longitud K. El código antiguo indexaba la
+# lista con el índice global (``candidates[índice_global]``):
+# ``IndexError`` cuando ``screen_top_k < N`` y la mejor feature queda fuera de
+# las primeras K posiciones, y feature/condicionamiento equivocados en
+# silencio en los demás casos.
+
+
+def _make_df_wide(spark, n, seed, weights):
+    """6 features; ``weights[i]`` es el coeficiente de ``x_i`` en ``y``."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 6))
+    y = sum(w * x[:, i] for i, w in enumerate(weights)) + 0.1 * rng.normal(size=n)
+    rows = [tuple(map(float, r)) + (float(v),) for r, v in zip(x, y)]
+    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "x4", "x5", "y"])
+
+
+@pytest.fixture(scope="module")
+def df_best_x5(spark):
+    """x5 (índice global 5) es la mejor; x3 segunda; x0..x4 independientes."""
+    return _make_df_wide(spark, n=3000, seed=7, weights=[0.0, 0.0, 0.0, 1.0, 0.0, 2.0])
+
+
+@pytest.fixture(scope="module")
+def df_order_x1_x2_x0(spark):
+    """Orden de MI x1 > x2 > x0 (la mejor no está en el índice global 0)."""
+    return _make_df_wide(spark, n=3000, seed=8, weights=[0.5, 1.6, 1.4, 0.0, 0.0, 0.0])
+
+
+def test_ksg_jmim_best_outside_first_k_positions(df_best_x5):
+    """screen_top_k=3 < N=6 y la mejor en el índice global 5: antes → IndexError."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=2,
+        screen_top_k=3,
+        seed=42,
+    ).fit(df_best_x5)
+    assert model.selected_features[0] == "x5"
+
+
+def test_ksg_cmim_best_outside_first_k_positions(df_best_x5):
+    """Igual con cmim exacta: la línea de ``s_m`` también indexaba con el global."""
+    model = InfoSelector(
+        target="y",
+        criterion="cmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=2,
+        screen_top_k=3,
+        seed=42,
+    ).fit(df_best_x5)
+    assert model.selected_features[0] == "x5"
+
+
+def test_ksg_jmim_silent_wrong_first_pick(df_order_x1_x2_x0):
+    """Mejor en el índice global 1 < K, pero orden de MI ≠ identidad:
+    antes elegía x2 (``candidates[1]``) en lugar de x1."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=3,
+        screen_top_k=3,
+        seed=42,
+    ).fit(df_order_x1_x2_x0)
+    assert model.selected_features[0] == "x1"
+    assert model.selected_features[1] == "x2"
+
+
+def test_ksg_cmim_silent_correct_s_m(df_order_x1_x2_x0):
+    """``s_m`` correcto = {x1, x2}; el código antiguo daba {x2, x0}."""
+    model = InfoSelector(
+        target="y",
+        criterion="cmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=2,
+        screen_top_k=3,
+        seed=42,
+    ).fit(df_order_x1_x2_x0)
+    assert model.selected_features[0] == "x1"
+    assert model.selected_features[1] == "x2"
+
+
 def test_ksg_transform(df):
     model = InfoSelector(
         target="y",
