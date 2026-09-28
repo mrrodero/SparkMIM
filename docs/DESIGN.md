@@ -45,7 +45,8 @@ cada feature → un `groupBy` → driver. Por feature:
 
 - Tabla de contingencia `P(x, y)` (densa, `n_codes × n_y`).
 - **MI univariante** `I(X;Y)` (nats).
-- **Significancia:** χ², test de permutación distribuido o BH-FDR (ver §4).
+- **Significancia:** interfaz `SignificanceTest` con tres adaptadores (χ²,
+  permutación distribuida, sin test) + control FDR (ver §4).
 - **Candidatas C:** top-`screen_top_k` por MI entre las que pasan el filtro de
   significancia.
 
@@ -81,6 +82,7 @@ Bucle greedy único (`selection.greedy_select`) detrás de la costura
 ```
 preprocess.py   esquema + preprocesado (etapa 0)
 screen.py       screening univariante (etapa 1)
+significance.py costura SignificanceTest + adaptadores (etapa 1)
 tables.py       tablas conjuntas + TableCache (etapa 2)
 oracles.py      InformationOracle + adaptadores (costura, etapa 3)
 selection.py    bucle greedy único (etapa 3, driver)
@@ -169,14 +171,24 @@ a 0.
 
 ## 4. Significancia
 
-Tres métodos (campo `significance`):
+Costura de la etapa 1: la interfaz `SignificanceTest` (`significance.py`) —
+"dadas las tablas de screening y la MI por feature (y, para la permutación,
+el df preparado), devuelve los p-valores y la máscara de significancia por
+feature". `screen()` solo compone: tablas → MI → significancia → top-K.
 
-- **`chi2`:** test de χ² sobre la tabla de contingencia (rápido, asintótico).
-- **`permutation`:** test de permutación distribuido (re-muestreo de `n`
-  permutaciones en workers, p-valor empírico).
-- **`fdr`:** control de la tasa de error falso (BH) sobre los p-valores de
-  χ² o permutación. `alpha` (0.05 por defecto).
-- **`none`:** sin filtro.
+Tres adaptadores (campo `significance`):
+
+- **`chi2`** (`Chi2Test`): test de χ² sobre la tabla de contingencia (rápido,
+  asintótico): `G² = 2·n·MI ~ χ²`.
+- **`permutation`** (`PermutationTest`): test de permutación distribuido (UN
+  `mapInPandas` sobre un subsample ≤ `permutation_rows`; `B = n_permutations`
+  permutaciones de y por partición, semilla `seed + b`; p-valor empírico).
+  Solo se aplica a las top-`screen_top_k` por MI (pre-filtro); el resto queda
+  con p = 1.
+- **`none`** (`NoTest`): sin filtro (p = 1, todas significativas).
+
+El control FDR de Benjamini-Hochberg (`fdr_q`, 0.05 por defecto) se aplica
+dentro de cada adaptador sobre sus p-valores.
 
 Las candidatas son las que superan el filtro de significancia **y** están en el
 top-`screen_top_k` por MI.
@@ -189,7 +201,7 @@ top-`screen_top_k` por MI.
 |---|---|---|
 | **Cómputo de tablas** | O(N) jobs (un `groupBy` por feature/par) | **Pases únicos** (1 `mapInPandas` + 1 `groupBy`) |
 | **CMI** | Re-muestreo o aproximación por par | Tablas conjuntas en 1 pase sobre subsample |
-| **Significancia** | Solo χ² (driver) | χ² / permutación distribuida / BH-FDR |
+| **Significancia** | Solo χ² (driver) | χ² / permutación distribuida / sin test (+ control FDR) |
 | **Continuas** | Binning fijo | Binning cuantil + estimador KSG opcional |
 | **Evaluación** | Externa (sklearn) | Integrada, agnóstica al modelo (GBT/XGBoost/LightGBM) |
 | **Dependencias** | sklearn, scipy (driver) | Solo pyspark, numpy, pandas, scipy (driver) |
@@ -251,6 +263,10 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
 - **Ranking de población completa:** el ranking cubre las N features por MI
   univariante (screening en el estimador de histograma, kNN en el estimador
   KSG); la curva de eficiencia escala con N.
+- **Significancia detrás de una costura:** la interfaz `SignificanceTest`
+  (`significance.py`) con tres adaptadores (χ², permutación, sin test);
+  `screen()` solo compone tablas → MI → significancia → top-K y el control
+  FDR vive dentro de cada adaptador.
 
 ---
 

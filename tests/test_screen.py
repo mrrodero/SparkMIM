@@ -11,7 +11,7 @@ from pyspark.sql import SparkSession
 
 from sparkmim.config import SelectorConfig
 from sparkmim.schema import FeatureSpec, Schema
-from sparkmim.screen import screen
+from sparkmim.screen import screen, select_candidates
 
 
 @pytest.fixture(scope="module")
@@ -43,6 +43,17 @@ def _make_screen_df(spark, n=2000, seed=0):
     x2 = rng.integers(0, 2, size=n)
     rows = [(int(a), int(b), int(c), int(d)) for a, b, c, d in zip(x0, x1, x2, y)]
     return spark.createDataFrame(rows, ["x0", "x1", "x2", "y"])
+
+
+def test_select_candidates_pure():
+    # Top-2 por MI entre las significativas: x0 (0.9) y x3 (0.7).
+    mi = np.array([0.9, 0.5, 0.1, 0.7])
+    significant = np.array([True, True, False, True])
+    assert select_candidates(mi, significant, 2) == [0, 3]
+    # Sin significativas => vacío.
+    assert select_candidates(mi, np.zeros(4, dtype=bool), 2) == []
+    # k mayor que el nº de significativas => todas, en orden de MI.
+    assert select_candidates(mi, significant, 10) == [0, 3, 1]
 
 
 def _make_schema():
