@@ -4,8 +4,9 @@ Atributos:
 - ``selected_features``: nombres originales de las features seleccionadas
   (en orden de selección).
 - ``scores_``: puntaje del criterio por ronda (nats).
-- ``ranking_``: ranking completo de candidatas ``(nombre, score)`` ordenado
-  por score descendente (score = MI univariante, etapa 1).
+- ``ranking_``: ranking completo de la población ``(nombre, score)`` ordenado
+  por score descendente (score = MI univariante, etapa 1; con el estimador
+  KSG, MI de kNN sobre el subsample).
 - ``criterion``: criterio usado (``"mrmr" | "mim" | "jmi" | "jmim" | "cmim"``).
 - ``n_rows``: nº de filas de ``df_prep``.
 - ``target``: nombre de la columna target.

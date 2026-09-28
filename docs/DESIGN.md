@@ -58,13 +58,48 @@ aproximada) en la etapa 3 sin volver a tocar los datos.
 
 ### Etapa 3 — Selección greedy (solo driver)
 
-Bucle greedy sobre el `TableCache` (sin jobs de Spark):
+Bucle greedy único (`selection.greedy_select`) detrás de la costura
+`InformationOracle` (`oracles.py`), operando en **posiciones de candidata**
+(0..K−1). Dos adaptadores (ADR-0001):
+
+- **`HistogramOracle`:** consultas sobre el `TableCache` (MI univariante, MI
+  de par, CMI de triple). `cmi_set_all` ejecuta el pase CMIM distribuido
+  (`mapInPandas` sobre el subsample) cuando el criterio es CMIM exacto.
+- **`KsgOracle`:** MI/CMI por kNN (estimador KSG) sobre el subsample en el
+  driver, sin binning.
 
 - **Ronda 1:** argmax MI univariante.
 - **Rondas siguientes:** puntuar cada candidata no seleccionada con el
   criterio (JMIM/CMIM/mRMR/mIM) y elegir el argmax.
 - **Parada:** `best_score < min_score` o `max_features` alcanzados.
-- **Ranking:** todas las candidatas por MI univariante (descendente).
+- **Ranking:** población completa (N features) por MI univariante
+  (descendente): la MI de screening en el estimador de histograma (sin coste
+  adicional) y la MI de kNN en el estimador KSG.
+
+### Mapa de módulos
+
+```
+preprocess.py   esquema + preprocesado (etapa 0)
+screen.py       screening univariante (etapa 1)
+tables.py       tablas conjuntas + TableCache (etapa 2)
+oracles.py      InformationOracle + adaptadores (costura, etapa 3)
+selection.py    bucle greedy único (etapa 3, driver)
+criteria.py     fórmulas de criterios + pase CMIM (mapInPandas)
+info/ksg.py     estimador KSG (MI/CMI por kNN)
+info/entropy.py MI/CMI sobre tablas discretas
+selector.py     orquestación de las etapas 0-3
+model.py        SelectorModel (resultado + transform/report)
+evaluate.py     evaluación (AUC/R² + curva de eficiencia)
+```
+
+```
+greedy_select (selection.py)
+        │  consulta
+   InformationOracle (oracles.py)   ← costura
+      ┌────────────────┴────────────────┐
+  HistogramOracle                   KsgOracle
+  (TableCache + pase CMIM)         (kNN en driver)
+```
 
 ---
 
@@ -90,22 +125,26 @@ Implementación: `info/entropy.py` (con `np.where` para evitar `0·log 0 = NaN`)
 
 ### Criterios greedy
 
-| Criterio | Fórmula |
-|---|---|
-| **JMIM** | `min_{Xi∈S} I(X;Y\|Xi)` |
-| **CMIM** | `I(X;Y\|S_m)`, `S_m` = top-m por MI (m=2) |
-| **mRMR** | `I(X;Y) − (1/\|S\|)·Σ_{Xi∈S} I(X;Xi)` |
-| **mIM** | `I(X;Y) − Σ_{Xi∈S} I(X;Xi)` |
-| **JMI** | `Σ_{Xi∈S} I(X;Y\|Xi)` |
+| Criterio | Fórmula | Consulta al oráculo |
+|---|---|---|
+| **JMIM** | `min_{Xi∈S} I(X;Y\|Xi)` | `cmi_single` |
+| **CMIM** | `I(X;Y\|S_m)`, `S_m` = top-m por MI (m=2) | `cmi_set_all` |
+| **mRMR** | `I(X;Y) − (1/\|S\|)·Σ_{Xi∈S} I(X;Xi)` | `mi_pair` |
+| **mIM** | `I(X;Y) − Σ_{Xi∈S} I(X;Xi)` | `mi_pair` |
+| **JMI** | `Σ_{Xi∈S} I(X;Y\|Xi)` | `cmi_single` |
+
+Los criterios rápidos (JMIM/mRMR/mIM/JMI) son aritmética pura sobre el
+oráculo (sin jobs de Spark); solo el CMIM exacto toca Spark a través de
+`cmi_set_all` (pase distribuido por ronda).
 
 **CMIM aproximado (`max_min`):** en lugar del pase exacto por ronda, CMIM se
 rutea a JMIM (`min_{Xi∈S} I(X;Y\|Xi)`), que es una cota inferior de la CMI
-condicionada en el conjunto. Esto evita el pase extra de la etapa 3.
+condicionada en el conjunto. Esto evita el pase CMIM distribuido de la etapa 3.
 
 **Conjunto efectivo de condicionamiento (CMIM):** `S_m \ {x}` (se excluye la
 candidata `x` para evitar la degeneración `I(X;Y|X)=0`).
 
-### Modo KSG (continuas)
+### Estimador KSG (continuas)
 
 Para variables continuas, el estimador de Kraskov-Stögbauer-Grassberger:
 
@@ -122,8 +161,8 @@ k-ésimo vecino en el espacio conjunto), y `k` es el número de vecinos
 La CMI **no** se recorta a 0 (negativa = sin información); la MI sí se recorta
 a 0.
 
-> **Trade-off:** el modo KSG submuestrea ≤ `ksg_subsample` (250k) filas al
-> driver y calcula MI/CMI por kNN allí. Es la única ruta con kNN global en
+> **Trade-off:** el estimador KSG submuestrea ≤ `ksg_subsample` (250k) filas
+> al driver y calcula MI/CMI por kNN allí. Es la única ruta con kNN global en
 > driver; adecuada para n moderado, no para 10⁷.
 
 ---
@@ -151,7 +190,7 @@ top-`screen_top_k` por MI.
 | **Cómputo de tablas** | O(N) jobs (un `groupBy` por feature/par) | **Pases únicos** (1 `mapInPandas` + 1 `groupBy`) |
 | **CMI** | Re-muestreo o aproximación por par | Tablas conjuntas en 1 pase sobre subsample |
 | **Significancia** | Solo χ² (driver) | χ² / permutación distribuida / BH-FDR |
-| **Continuas** | Binning fijo | Binning cuantil + modo KSG opcional |
+| **Continuas** | Binning fijo | Binning cuantil + estimador KSG opcional |
 | **Evaluación** | Externa (sklearn) | Integrada, agnóstica al modelo (GBT/XGBoost/LightGBM) |
 | **Dependencias** | sklearn, scipy (driver) | Solo pyspark, numpy, pandas, scipy (driver) |
 
@@ -171,10 +210,15 @@ Sea `n` = filas, `N` = features, `K` = candidatas, `b` = bins, `C` = categorías
 | **0b** (mapeo) | `O(n·N)` en workers | 1 mapeo (sin shuffle) | — |
 | **1** (screening) | `O(n·N)` en workers | 1 `mapInPandas` + 1 `groupBy` | `O(N·b·n_y)` |
 | **2** (tablas conjuntas) | `O(n_sub·K²)` en workers | 1 `mapInPandas` + 1 `groupBy` | `O(K²·b²·n_y)` |
-| **3** (greedy) | `O(max_features·K²)` en driver | 0 | `O(K²)` |
+| **3** (greedy) | `O(max_features·K²)` en driver | 0 (CMIM exacto: 1 `mapInPandas` por ronda) | `O(K²)` |
 
 **Escala:** lineal en `n` y en `N` (etapa 1) / `K²` (etapa 2). El bucle greedy
-es solo driver y no lanza jobs.
+es solo driver y no lanza jobs (salvo el pase CMIM exacto: 1 `mapInPandas`
+por ronda).
+
+**Evaluación:** `efficiency_curve` entrena un modelo por prefijo del ranking
+(coste O(|ranking|) entrenamientos); con el ranking de población completa
+escala con N, no con K.
 
 **Meta:** n=10⁶, N=200, K=100, `local[8]` → etapa 1 ~1–3 min, etapa 2 ~1–3 min,
 greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
@@ -196,17 +240,24 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   K (descartando candidatas de menor MI).
 - **Ronda 1 = argmax MI:** evita el coste de CMI en la primera ronda (donde la
   redundancia no importa).
-- **CMIM `max_min`:** rutea CMIM a JMIM para evitar el pase extra de la etapa
-  3 (cota inferior de la CMI).
-- **KSG opcional:** única ruta con kNN global en driver; para continuas donde el
-  binning no es aceptable (n moderado).
+- **CMIM `max_min`:** rutea CMIM a JMIM para evitar el pase CMIM distribuido de
+  la etapa 3 (cota inferior de la CMI).
+- **Estimador KSG opcional:** única ruta con kNN global en driver; para
+  continuas donde el binning no es aceptable (n moderado).
+- **Selección greedy detrás de un oráculo (ADR-0001):** un solo bucle
+  (`greedy_select`) sobre la interfaz `InformationOracle`, con dos
+  adaptadores (histograma y KSG); los criterios rápidos son aritmética pura
+  sobre el oráculo.
+- **Ranking de población completa:** el ranking cubre las N features por MI
+  univariante (screening en el estimador de histograma, kNN en el estimador
+  KSG); la curva de eficiencia escala con N.
 
 ---
 
 ## 8. Limitaciones
 
-- **Binning:** el modo histogram pierde información en continuas de alta
-  dimensionalidad; el modo KSG lo mitiga pero es más caro (driver).
+- **Binning:** el estimador de histograma pierde información en continuas de
+  alta dimensionalidad; el estimador KSG lo mitiga pero es más caro (driver).
 - **Categorías raras:** el top-C + "other" agrupa categorías raras (sesgo).
 - **CMIM exacto:** el conjunto `S_m` es fijo (top-m por MI); no se actualiza por
   ronda (aproximación documentada).

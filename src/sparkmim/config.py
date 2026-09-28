@@ -24,7 +24,7 @@ class SelectorConfig:
     - ``max_features``: nº de features a seleccionar.
     - ``screen_top_k``: candidatas conservadas tras el screening (etapa 1).
     - ``bins``: bins para continuas (int) o ``"auto"`` = clamp(round(log2 n), 4, 20).
-    - ``bins_target``: bins cuantiles del target en modo histograma (regresión).
+    - ``bins_target``: bins cuantiles del target con el estimador de histograma (regresión).
     - ``max_categories``: tope de cardinalidad categóricas (top-C + "other").
     - ``missing``: ``"category"`` (código dedicado) | ``"drop"``.
     - ``significance``: ``"chi2"`` | ``"permutation"`` | None.

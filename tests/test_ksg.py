@@ -1,4 +1,4 @@
-"""Tests del modo KSG (Hito 5): estimador KSG + integración e2e.
+"""Tests del estimador KSG (Hito 5): estimador KSG + integración e2e.
 
 - Unitarios: ``ksg_mi`` (independiente ≈ 0, dependiente > independiente) y
   ``ksg_cmi`` (identidad ``MI(XZ;Y) − MI(Z;Y)``).
@@ -148,14 +148,13 @@ def test_ksg_mrmr_selects_informative(df):
     assert "x2" not in model.selected_features
 
 
-# --- Regresión: índice global vs posición en candidatas (modo KSG) ---
+# --- Regresión: índice global vs posición en candidatas (estimador KSG) ---
 #
-# El greedy KSG trabaja con índices globales de feature (0..N-1), pero
-# ``candidates`` es una lista de longitud K. El código antiguo indexaba la
-# lista con el índice global (``candidates[índice_global]``):
-# ``IndexError`` cuando ``screen_top_k < N`` y la mejor feature queda fuera de
-# las primeras K posiciones, y feature/condicionamiento equivocados en
-# silencio en los demás casos.
+# El greedy trabaja en posiciones de candidata (0..K-1). El código antiguo
+# indexaba la lista ``candidates`` (longitud K) con el índice global de
+# feature (0..N-1): ``IndexError`` cuando ``screen_top_k < N`` y la mejor
+# feature queda fuera de las primeras K posiciones, y feature/condicionamiento
+# equivocados en silencio en los demás casos.
 
 
 def _make_df_wide(spark, n, seed, weights):

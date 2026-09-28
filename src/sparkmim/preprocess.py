@@ -12,7 +12,7 @@ categorías por frecuencia + código "other".
 
 Pase 0b (mapeo sin shuffle): cadenas ``when`` por columna aplicando bins y
 códigos; missing → código dedicado (o drop). Target: binaria tal cual,
-multiclase → códigos, regresión → bins cuantiles (modo histograma).
+multiclase → códigos, regresión → bins cuantiles (estimador de histograma).
 
 Se materializa ``df_prep`` (códigos enteros) con ``persist(MEMORY_AND_DISK)``.
 """

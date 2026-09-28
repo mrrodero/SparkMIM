@@ -92,12 +92,19 @@ class InfoSelector:
         timings["etapa1"] = time.perf_counter() - t
         candidates = list(screen_result.candidates)
         K = len(candidates)
+        feature_names = schema.feature_names()
+        # Ranking: población completa (N features) por MI univariante de
+        # screening, descendente. Sin coste adicional: reutiliza la etapa 1.
+        ranking = sorted(
+            [(feature_names[i], float(screen_result.mi[i])) for i in range(len(feature_names))],
+            key=lambda t: -t[1],
+        )
         if K == 0:
             timings["total"] = time.perf_counter() - t0
             return SelectorModel(
                 selected_features=[],
                 scores_=[],
-                ranking_=[],
+                ranking_=ranking,
                 criterion=self.criterion,
                 n_rows=n_rows,
                 target=target_col,
@@ -105,7 +112,6 @@ class InfoSelector:
             )
 
         # Columnas y códigos de las candidatas (orden por MI descendente).
-        feature_names = schema.feature_names()
         candidate_cols = [feature_names[i] for i in candidates]
         candidate_n_codes = [schema.n_codes()[i] for i in candidates]
         n_y = schema.target.n_codes
@@ -145,12 +151,6 @@ class InfoSelector:
             config.min_score,
             config.max_features,
             config.cmim_m,
-        )
-        mi = oracle.mi_all()
-        # Ranking: candidatas (K) por MI univariante.
-        ranking = sorted(
-            [(feature_names[candidates[i]], float(mi[i])) for i in range(K)],
-            key=lambda t: -t[1],
         )
         model = SelectorModel(
             selected_features=[feature_names[candidates[i]] for i in result.selected],
@@ -212,7 +212,8 @@ class InfoSelector:
         # Etapa 1: MI por KSG para cada feature (población completa).
         mi_all = np.array([ksg_mi(X[:, i], y, config.ksg_k) for i in range(N)])
 
-        # Screening: top-K por MI (descendente). Sin filtro FDR en modo KSG.
+        # Screening: top-K por MI (descendente). Sin filtro de significancia
+        # con el estimador KSG (implementación pendiente).
         order = np.argsort(-mi_all, kind="stable")
         K = min(config.screen_top_k, N)
         cand = [int(i) for i in order[:K]]
