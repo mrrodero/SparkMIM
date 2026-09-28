@@ -1,8 +1,9 @@
-"""Tests de significancia (Hito 3): χ², BH-FDR y test de permutación.
+"""Tests de significancia (Hito 3): costura ``SignificanceTest`` + adaptadores.
 
-- χ² y BH-FDR: tests puros (numpy/scipy), sin Spark.
-- Permutación: test distribuido (``mapInPandas``) con Spark. Independencia →
-  no significativo; dependencia → p < 0.05.
+- Helpers puros (χ², p-valor de permutación, BH-FDR): sin Spark.
+- Adaptadores ``Chi2Test`` y ``NoTest``: puros (sin Spark).
+- Adaptador ``PermutationTest``: test distribuido (``mapInPandas``) con Spark.
+  Independencia → no significativo; dependencia → p < 0.05 y significativo.
 """
 
 import numpy as np
@@ -10,9 +11,18 @@ import pytest
 from pyspark.sql import SparkSession
 from scipy import stats
 
+from sparkmim.config import SelectorConfig
 from sparkmim.info.entropy import mutual_information
-from sparkmim.screen import _permutation_pvalues
-from sparkmim.significance import bh_fdr, chi2_pvalue, permutation_pvalue
+from sparkmim.significance import (
+    Chi2Test,
+    NoTest,
+    PermutationTest,
+    SignificanceInput,
+    bh_fdr,
+    chi2_pvalue,
+    make_significance_test,
+    permutation_pvalue,
+)
 
 
 @pytest.fixture(scope="module")
@@ -30,11 +40,11 @@ def spark():
     session.stop()
 
 
-# --- χ² ---
+# --- Helpers puros (χ², permutación, BH-FDR) ---
 
 
 def test_chi2_independent():
-    # Tabla con independencia exacta => MI = 0, G² = 0, p = 1.
+    # Tabla 2x2 uniforme: MI = 0 => p ≈ 1.
     table = np.array([[10, 10], [10, 10]], dtype=np.int64)
     mi = mutual_information(table)
     assert mi == pytest.approx(0.0, abs=1e-12)
@@ -42,84 +52,135 @@ def test_chi2_independent():
 
 
 def test_chi2_dependent():
-    # Correlación perfecta => MI = log(2), G² = 2·200·log(2), df = 1.
+    # Correlación perfecta: MI = log 2, G² = 2·n·MI.
     table = np.array([[100, 0], [0, 100]], dtype=np.int64)
     mi = mutual_information(table)
-    assert mi == pytest.approx(np.log(2), abs=1e-12)
-    p = chi2_pvalue(table, mi)
-    assert p < 0.05
-    assert p == pytest.approx(stats.chi2.sf(2 * 200 * np.log(2), 1))
+    assert mi == pytest.approx(np.log(2))
+    g2 = 2 * 200 * mi
+    expected = stats.chi2.sf(g2, 1)
+    assert chi2_pvalue(table, mi) == pytest.approx(expected)
+    assert chi2_pvalue(table, mi) < 0.05
 
 
 def test_chi2_empty_and_degenerate():
     # Tabla vacía => p = 1.
     assert chi2_pvalue(np.zeros((2, 2), dtype=np.int64), 0.0) == 1.0
-    # df no positivo (una dimensión) => p = 1.
+    # df = 0 (una fila o una columna) => p = 1.
     assert chi2_pvalue(np.array([[5, 5]], dtype=np.int64), 0.0) == 1.0
 
 
-# --- BH-FDR ---
-
-
 def test_bh_fdr_all_significant():
-    # m=5, umbrales (1..5/5)·0.05 = [0.01, 0.02, 0.03, 0.04, 0.05].
-    pvals = np.array([0.001, 0.002, 0.003, 0.004, 0.005])
-    assert bh_fdr(pvals, q=0.05).all()
+    p = np.array([0.001, 0.002, 0.003])
+    assert bh_fdr(p, q=0.05).all()
 
 
 def test_bh_fdr_none_significant():
-    pvals = np.array([0.5, 0.6, 0.7, 0.8, 0.9])
-    assert not bh_fdr(pvals, q=0.05).any()
+    p = np.array([0.5, 0.6, 0.7])
+    assert not bh_fdr(p, q=0.05).any()
 
 
 def test_bh_fdr_partial():
-    # m=4, q=0.05, umbrales [0.0125, 0.025, 0.0375, 0.05].
-    # Solo el p más pequeño (0.01 <= 0.0125) pasa.
-    pvals = np.array([0.01, 0.03, 0.04, 0.9])
-    assert bh_fdr(pvals, q=0.05).tolist() == [True, False, False, False]
+    # Solo el p más pequeño sobrevive: p_(1) = 0.01 <= (1/4)·0.05 = 0.0125,
+    # p_(2) = 0.03 > (2/4)·0.05 = 0.025.
+    p = np.array([0.01, 0.03, 0.04, 0.9])
+    assert bh_fdr(p, q=0.05).tolist() == [True, False, False, False]
 
 
 def test_bh_fdr_empty():
     assert bh_fdr(np.array([]), q=0.05).size == 0
 
 
-# --- permutation_pvalue (función pura) ---
-
-
 def test_permutation_pvalue_helper():
-    # Todos los nulos < observado => p = 1/(B+1).
-    assert permutation_pvalue(1.0, np.array([0.1, 0.2, 0.3])) == pytest.approx(1 / 4)
-    # Todos los nulos >= observado => p = (1+B)/(B+1) = 1.
-    assert permutation_pvalue(0.1, np.array([0.5, 0.6, 0.7])) == pytest.approx(1.0)
-    # Sin permutaciones => p = 1.
+    # 1 de 3 nulas >= observada => (1+1)/(3+1) = 0.5.
+    assert permutation_pvalue(0.5, np.array([0.1, 0.6, 0.2])) == pytest.approx(0.5)
+    # Ninguna nula >= observada => 1/(B+1).
+    assert permutation_pvalue(0.9, np.array([0.1, 0.2, 0.3])) == pytest.approx(1 / 4)
+    # B = 0 => 1.0.
     assert permutation_pvalue(0.5, np.array([])) == 1.0
 
 
-# --- Test de permutación distribuido (Spark) ---
+# --- Adaptadores (costura SignificanceTest) ---
 
 
-def _make_perm_df(spark, n, dependent, seed):
-    """x con 4 categorías; y binaria dependiente (y = x % 2) o independiente."""
+def test_chi2_adapter():
+    # x0: correlación perfecta (significativa); x1: independencia exacta.
+    t_dep = np.array([[100, 0], [0, 100]], dtype=np.int64)
+    t_indep = np.array([[10, 10], [10, 10]], dtype=np.int64)
+    tables = {0: t_dep, 1: t_indep}
+    mi = np.array([mutual_information(t_dep), mutual_information(t_indep)])
+    result = Chi2Test(q=0.05).test(SignificanceInput(tables=tables, mi=mi))
+    assert result.pvalues[0] < 0.05
+    assert result.pvalues[1] == pytest.approx(1.0)
+    assert result.significant.tolist() == [True, False]
+
+
+def test_no_test_adapter():
+    tables = {0: np.array([[5, 5], [5, 5]], dtype=np.int64)}
+    mi = np.array([0.0])
+    result = NoTest().test(SignificanceInput(tables=tables, mi=mi))
+    assert result.pvalues == pytest.approx(np.array([1.0]))
+    assert result.significant.all()
+
+
+def test_factory_adapters():
+    assert isinstance(
+        make_significance_test(SelectorConfig(target="y", significance="chi2")),
+        Chi2Test,
+    )
+    assert isinstance(
+        make_significance_test(SelectorConfig(target="y", significance="permutation")),
+        PermutationTest,
+    )
+    assert isinstance(
+        make_significance_test(SelectorConfig(target="y", significance=None)),
+        NoTest,
+    )
+
+
+def _make_perm_df(spark, n, seed):
+    """3 features binarias + target binario.
+
+    - x_dep: 90% correlada con y (fuerte).
+    - x_indep: independiente de y (ruido).
+    - x_noise: independiente de y (ruido; la de menor MI).
+    """
     rng = np.random.default_rng(seed)
-    x = rng.integers(0, 4, size=n)
-    y = (x % 2) if dependent else rng.integers(0, 2, size=n)
-    rows = [(int(a), int(b)) for a, b in zip(x, y)]
-    return spark.createDataFrame(rows, ["x", "y"])
+    y = rng.integers(0, 2, size=n)
+    x_dep = np.where(rng.random(n) < 0.9, y, 1 - y)
+    x_indep = rng.integers(0, 2, size=n)
+    x_noise = rng.integers(0, 2, size=n)
+    rows = [(int(a), int(b), int(c), int(d)) for a, b, c, d in zip(x_dep, x_indep, x_noise, y)]
+    return spark.createDataFrame(rows, ["x_dep", "x_indep", "x_noise", "y"])
 
 
-def test_permutation_independent_not_significant(spark):
-    df = _make_perm_df(spark, n=2000, dependent=False, seed=1)
-    pvals = _permutation_pvalues(
-        df, ["x"], "y", [4], 2, n_b=100, n_rows_sub=2000, seed=42
+def test_permutation_adapter(spark):
+    df = _make_perm_df(spark, n=2000, seed=1)
+    # Las tablas no las usa el adaptador (las recomputa desde df_prep); se
+    # pasan por uniformidad de la interfaz.
+    tables = {
+        i: np.array([[500, 500], [500, 500]], dtype=np.int64) for i in range(3)
+    }
+    # MI plantada: x_dep > x_indep > x_noise (el pre-filtro usa este orden).
+    mi = np.array([0.5, 0.01, 0.005])
+    test = PermutationTest(
+        q=0.05, n_permutations=100, permutation_rows=2000, screen_top_k=2, seed=42
     )
-    # Independencia => p alto (no significativo).
-    assert pvals[0] > 0.05
-
-
-def test_permutation_dependent_significant(spark):
-    df = _make_perm_df(spark, n=2000, dependent=True, seed=2)
-    pvals = _permutation_pvalues(
-        df, ["x"], "y", [4], 2, n_b=100, n_rows_sub=2000, seed=42
+    result = test.test(
+        SignificanceInput(
+            tables=tables,
+            mi=mi,
+            df_prep=df,
+            feature_cols=["x_dep", "x_indep", "x_noise"],
+            target_col="y",
+            n_x=[2, 2, 2],
+            n_y=2,
+        )
     )
-    # Dependencia fuerte => p bajo (significativo).
-    assert pvals[0] < 0.05
+    # La dependiente (top-1 por MI) es significativa.
+    assert result.pvalues[0] < 0.05
+    assert result.significant[0]
+    # La independiente (top-2) no lo es.
+    assert not result.significant[1]
+    # La de menor MI no se testa (pre-filtro top-K): p = 1, no significativa.
+    assert result.pvalues[2] == pytest.approx(1.0)
+    assert not result.significant[2]

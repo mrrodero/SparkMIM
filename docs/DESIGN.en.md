@@ -44,7 +44,8 @@ each feature → a `groupBy` → driver. Per feature:
 
 - Contingency table `P(x, y)` (dense, `n_codes × n_y`).
 - **Univariate MI** `I(X;Y)` (nats).
-- **Significance:** χ², distributed permutation test, or BH-FDR (see §4).
+- **Significance:** `SignificanceTest` interface with three adapters (χ²,
+  distributed permutation, no test) + FDR control (see §4).
 - **Candidates C:** top-`screen_top_k` by MI among those passing the
   significance filter.
 
@@ -80,6 +81,7 @@ Single greedy loop (`selection.greedy_select`) behind the
 ```
 preprocess.py   schema + preprocessing (stage 0)
 screen.py       univariate screening (stage 1)
+significance.py SignificanceTest seam + adapters (stage 1)
 tables.py       joint tables + TableCache (stage 2)
 oracles.py      InformationOracle + adapters (seam, stage 3)
 selection.py    single greedy loop (stage 3, driver)
@@ -168,14 +170,24 @@ to 0.
 
 ## 4. Significance
 
-Three methods (`significance` field):
+Stage-1 seam: the `SignificanceTest` interface (`significance.py`) — "given
+the screening tables and the MI per feature (and, for permutation, the
+prepared df), return the p-values and the significance mask per feature".
+`screen()` only composes: tables → MI → significance → top-K.
 
-- **`chi2`:** χ² test on the contingency table (fast, asymptotic).
-- **`permutation`:** distributed permutation test (resampling of `n`
-  permutations in workers, empirical p-value).
-- **`fdr`:** false discovery rate control (BH) over the p-values of χ² or
-  permutation. `alpha` (0.05 by default).
-- **`none`:** no filter.
+Three adapters (`significance` field):
+
+- **`chi2`** (`Chi2Test`): χ² test on the contingency table (fast,
+  asymptotic): `G² = 2·n·MI ~ χ²`.
+- **`permutation`** (`PermutationTest`): distributed permutation test (ONE
+  `mapInPandas` over a subsample ≤ `permutation_rows`; `B = n_permutations`
+  permutations of y per partition, seed `seed + b`; empirical p-value). It is
+  only applied to the top-`screen_top_k` by MI (pre-filter); the rest stays
+  at p = 1.
+- **`none`** (`NoTest`): no filter (p = 1, all significant).
+
+Benjamini-Hochberg FDR control (`fdr_q`, 0.05 by default) is applied inside
+each adapter over its p-values.
 
 The candidates are those that pass the significance filter **and** are in the
 top-`screen_top_k` by MI.
@@ -188,7 +200,7 @@ top-`screen_top_k` by MI.
 |---|---|---|
 | **Table computation** | O(N) jobs (one `groupBy` per feature/pair) | **Single passes** (1 `mapInPandas` + 1 `groupBy`) |
 | **CMI** | Resampling or pairwise approximation | Joint tables in 1 pass over a subsample |
-| **Significance** | Only χ² (driver) | χ² / distributed permutation / BH-FDR |
+| **Significance** | Only χ² (driver) | χ² / distributed permutation / no test (+ FDR control) |
 | **Continuous** | Fixed binning | Quantile binning + optional KSG estimator |
 | **Evaluation** | External (sklearn) | Integrated, model-agnostic (GBT/XGBoost/LightGBM) |
 | **Dependencies** | sklearn, scipy (driver) | Only pyspark, numpy, pandas, scipy (driver) |
@@ -250,6 +262,10 @@ min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
 - **Full-population ranking:** the ranking covers all N features by
   univariate MI (screening in the histogram estimator, kNN in the KSG
   estimator); the efficiency curve scales with N.
+- **Significance behind a seam:** the `SignificanceTest` interface
+  (`significance.py`) with three adapters (χ², permutation, no test);
+  `screen()` only composes tables → MI → significance → top-K and FDR
+  control lives inside each adapter.
 
 ---
 

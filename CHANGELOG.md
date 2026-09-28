@@ -13,9 +13,25 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
 
 ### Changed
 
+- **Costura de oráculo de información** (`oracles.py`, `selection.py`,
+  `criteria.py`): la selección greedy (etapa 3) ahora opera detrás de la
+  interfaz `InformationOracle` con dos adaptadores (`HistogramOracle`,
+  `KsgOracle`); un único bucle greedy en posiciones de candidata (ADR-0001).
+- **Ranking de población completa:** `SelectorModel.ranking_` cubre las N
+  features (no solo las candidatas) por MI univariante descendente.
+- **Significancia detrás de una costura** (`significance.py`): interfaz
+  `SignificanceTest` con tres adaptadores (`Chi2Test`, `PermutationTest`,
+  `NoTest`) y control BH-FDR dentro de cada adaptador; `screen.py` solo
+  compone tablas → MI → significancia → top-K.
 - Reorganización de documentación: `DESIGN.md` movido a `docs/DESIGN.md`
   (versiones ES y EN juntas en `docs/`); eliminado `PLAN_IMPLEMENTACION.md`
   (hitos 0–7 completados) y redirigidas sus referencias a `docs/DESIGN.md §2`.
+
+### Fixed
+
+- **Índices del bucle greedy (KSG):** el bucle greedy indexaba la lista de
+  candidatas (longitud K) con índices globales de feature; ahora opera en
+  posiciones de candidata 0..K−1.
 
 ## [0.1.0] - 2026-09-16
 
