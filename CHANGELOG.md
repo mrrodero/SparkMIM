@@ -38,6 +38,11 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   espera `conditional_mi` (x, Y, z), sin importar el orden de (i, j); la
   canonicidad (min, max) y el conocimiento de ejes quedan en un solo sitio
   (el caché) y `HistogramOracle.cmi_single` queda como fórmula delgada.
+- **Config por modo** (`config.py`, `selector.py`): `SelectorConfig` declara
+  la relevancia por modo en un solo sitio (campos de histograma / de KSG /
+  compartidos); un campo del otro modo distinto de su valor por defecto lanza
+  `ValueError` en la construcción; el modo KSG exige columnas numéricas con
+  error claro en `fit` (no un crash profundo en `to_numpy`).
 
 ### Fixed
 

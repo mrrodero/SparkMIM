@@ -88,6 +88,12 @@ model = sel.fit(df)
 > driver and computes MI/CMI by kNN there. It is the only route with global
 > kNN in the driver; suitable for moderate n, not for 10⁷.
 
+> **Fields per mode:** in KSG only `ksg_k` and `ksg_subsample` apply (plus the
+> shared ones); histogram fields (`bins`, `significance`, `subsample`, ...)
+> must keep their default value, otherwise construction raises `ValueError`.
+> KSG mode requires numeric columns (features and target): otherwise `fit`
+> raises `ValueError` naming the offending columns.
+
 ---
 
 ## API reference

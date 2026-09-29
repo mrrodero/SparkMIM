@@ -20,6 +20,15 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import (
+    ByteType,
+    DecimalType,
+    DoubleType,
+    FloatType,
+    IntegerType,
+    LongType,
+    ShortType,
+)
 
 from .config import SelectorConfig
 from .criteria import CRITERIA
@@ -43,6 +52,17 @@ __all__ = [
     "MRMRSelector",
     "MIMSelector",
 ]
+
+# Tipos numéricos que el modo KSG acepta (features y target).
+_KSG_NUMERIC_TYPES = (
+    ByteType,
+    ShortType,
+    IntegerType,
+    LongType,
+    FloatType,
+    DoubleType,
+    DecimalType,
+)
 
 
 class InfoSelector:
@@ -184,9 +204,23 @@ class InfoSelector:
 
         Etapa 1: MI por KSG (driver, población completa). Etapa 3: greedy
         detrás de ``KsgOracle`` (posiciones de candidata).
+
+        Las features y el target deben ser numéricos: si no, error claro aquí
+        (no un crash profundo en ``to_numpy(dtype=float)``).
         """
         target_col = config.target
         feature_cols = [c for c in df.columns if c != target_col]
+        bad_cols = [
+            c
+            for c in feature_cols + [target_col]
+            if not isinstance(df.schema[c].dataType, _KSG_NUMERIC_TYPES)
+        ]
+        if bad_cols:
+            raise ValueError(
+                "el modo 'ksg' requiere columnas numéricas (features y target); "
+                f"no numéricas: "
+                f"{[(c, df.schema[c].dataType.typeName()) for c in bad_cols]}"
+            )
         n_total = int(df.count())
         if n_total <= config.ksg_subsample:
             df_sub = df

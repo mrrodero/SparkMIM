@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields, MISSING
 from typing import List, Optional, Union
 
 from pyspark.sql import SparkSession
@@ -13,6 +13,40 @@ _MISSING_MODES = ("category", "drop")
 _SIGNIFICANCE_MODES = ("chi2", "permutation", None)
 _ESTIMATORS = ("histogram", "ksg")
 _CMIM_APPROX = ("max_min", None)
+
+# Relevancia por modo (fuente única; el modo lo fija ``estimator``).
+# Un campo de un grupo "solo X" no aplica al modo opuesto: debe dejar su
+# valor por defecto, si no la construcción lanza ValueError.
+_KSG_ONLY_FIELDS = frozenset({"ksg_k", "ksg_subsample"})
+_HISTOGRAM_ONLY_FIELDS = frozenset(
+    {
+        "bins",
+        "bins_target",
+        "max_categories",
+        "missing",
+        "significance",
+        "fdr_q",
+        "n_permutations",
+        "permutation_rows",
+        "subsample",
+        "max_cache_cells",
+        "numeric_features",
+        "categorical_features",
+    }
+)
+_SHARED_FIELDS = frozenset(
+    {
+        "target",
+        "max_features",
+        "screen_top_k",
+        "min_score",
+        "seed",
+        "cmim_m",
+        "cmim_approx",
+        "spark",
+        "estimator",
+    }
+)
 
 
 @dataclass
@@ -42,6 +76,19 @@ class SelectorConfig:
     - ``cmim_approx``: ``"max_min"`` usa JMIM como aproximación ultrarrápida.
     - ``spark``: sesión Spark (si None, ``getOrCreate()``).
     - ``numeric_features`` / ``categorical_features``: override manual del esquema.
+
+    Modo (``estimator``) — relevancia por modo declarada en un solo sitio
+    (``_HISTOGRAM_ONLY_FIELDS`` / ``_KSG_ONLY_FIELDS`` / ``_SHARED_FIELDS``):
+    - ``"histogram"`` (default): ``bins``, ``bins_target``, ``max_categories``,
+      ``missing``, ``significance``, ``fdr_q``, ``n_permutations``,
+      ``permutation_rows``, ``subsample``, ``max_cache_cells`` y los overrides
+      de esquema (``numeric_features`` / ``categorical_features``).
+    - ``"ksg"``: ``ksg_k`` y ``ksg_subsample``; las features y el target deben
+      ser numéricos (error claro en ``fit``).
+    - Compartidos: ``target``, ``max_features``, ``screen_top_k``, ``min_score``,
+      ``seed``, ``cmim_m``, ``cmim_approx``, ``spark``.
+    Un campo del otro modo distinto de su valor por defecto lanza ``ValueError``
+    en la construcción.
     """
 
     target: str
@@ -102,6 +149,7 @@ class SelectorConfig:
             raise ValueError("subsample debe ser >= 1000")
         if self.estimator not in _ESTIMATORS:
             raise ValueError(f"estimator debe ser uno de {_ESTIMATORS}")
+        self._validate_mode()
         if self.ksg_k < 1:
             raise ValueError("ksg_k debe ser >= 1")
         if self.ksg_subsample < 1000:
@@ -116,3 +164,25 @@ class SelectorConfig:
             overlap = set(self.numeric_features) & set(self.categorical_features)
             if overlap:
                 raise ValueError(f"features en ambas listas: {sorted(overlap)}")
+
+    def _validate_mode(self) -> None:
+        """Los campos del otro modo deben dejar su valor por defecto.
+
+        La relevancia por modo vive en los grupos ``_HISTOGRAM_ONLY_FIELDS`` /
+        ``_KSG_ONLY_FIELDS`` (fuente única); aquí solo se comprueba que el
+        modo activo no recibe campos ajenos distintos de su defecto.
+        """
+        other = (
+            _HISTOGRAM_ONLY_FIELDS
+            if self.estimator == "ksg"
+            else _KSG_ONLY_FIELDS
+        )
+        defaults = {
+            f.name: f.default for f in fields(self) if f.default is not MISSING
+        }
+        bad = sorted(name for name in other if getattr(self, name) != defaults[name])
+        if bad:
+            raise ValueError(
+                f"campos {', '.join(bad)} no aplican al estimador "
+                f"'{self.estimator}' (déjalos en su valor por defecto)"
+            )
