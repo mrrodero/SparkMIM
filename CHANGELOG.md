@@ -26,6 +26,13 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
 - Reorganización de documentación: `DESIGN.md` movido a `docs/DESIGN.md`
   (versiones ES y EN juntas en `docs/`); eliminado `PLAN_IMPLEMENTACION.md`
   (hitos 0–7 completados) y redirigidas sus referencias a `docs/DESIGN.md §2`.
+- **Evaluación detrás de una costura** (`model_factory.py`, `evaluate.py`):
+  nueva interfaz `ModelFactory` con tres adaptadores (`GbtFactory`,
+  `XgboostFactory`, `LightgbmFactory`); `train_and_evaluate`,
+  `efficiency_curve` y `report` aceptan un nombre de backend o una
+  `ModelFactory`; el coste de entrenamiento (2 + |ranking|) y la regla de
+  detección de tarea se declaran en la interfaz; `detect_task` ahora es
+  pública.
 
 ### Fixed
 
