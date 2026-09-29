@@ -33,6 +33,11 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   `ModelFactory`; el coste de entrenamiento (2 + |ranking|) y la regla de
   detección de tarea se declaran en la interfaz; `detect_task` ahora es
   pública.
+- **Caché con accesores orientados** (`tables.py`, `oracles.py`):
+  `TableCache.cmi_table(i, j)` devuelve la triple en la orientación que
+  espera `conditional_mi` (x, Y, z), sin importar el orden de (i, j); la
+  canonicidad (min, max) y el conocimiento de ejes quedan en un solo sitio
+  (el caché) y `HistogramOracle.cmi_single` queda como fórmula delgada.
 
 ### Fixed
 

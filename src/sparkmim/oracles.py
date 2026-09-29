@@ -93,12 +93,9 @@ class HistogramOracle:
         return float(mutual_information(self._cache.pair(i, j)))
 
     def cmi_single(self, i: int, j: int) -> float:
-        # cache.triple(i, j) es canónica (n_min, n_max, n_y).
-        t = self._cache.triple(i, j)
-        if i > j:
-            t = t.transpose(1, 0, 2)  # → (n_i, n_j, n_y)
-        # conditional_mi espera ejes (n_x, n_y, n_z).
-        return float(conditional_mi(t.transpose(0, 2, 1)))
+        # La caché entrega la triple en la orientación (n_i, n_y, n_j) que
+        # espera conditional_mi; canonicidad y ejes viven en TableCache.
+        return float(conditional_mi(self._cache.cmi_table(i, j)))
 
     def cmi_set_all(self, s_m: Sequence[int]) -> np.ndarray:
         return cmim_scores(

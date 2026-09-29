@@ -217,8 +217,13 @@ class TableCache:
 
     Contiene:
     - ``univariate[fid]``: tabla (n_x, n_y) del screening (etapa 1).
-    - ``triples[(i, j)]``: tabla (n_i, n_j, n_y) de la etapa 2.
-    - ``pair(i, j)``: marginal (n_i, n_j) de la triple, cacheado.
+    - ``triples[(i, j)]``: tabla (n_i, n_j, n_y) de la etapa 2, con clave
+      canónica (min, max).
+
+    Los accesores esconden la canonicidad y la orientación de los ejes de
+    almacenamiento: el llamador pide "la tabla de x condicionada en z" y
+    recibe la tabla en la orientación que esperan las funciones de entropía
+    (``mutual_information``: (n_x, n_y); ``conditional_mi``: (n_x, n_y, n_z)).
     """
 
     def __init__(
@@ -241,6 +246,20 @@ class TableCache:
     def triple(self, i: int, j: int) -> np.ndarray:
         """Tabla (n_i, n_j, n_y) para el par canónico (min, max)."""
         return self.triples[(min(i, j), max(i, j))]
+
+    def cmi_table(self, i: int, j: int) -> np.ndarray:
+        """Tabla (n_i, n_y, n_j) de ``CMI(X_i; Y | X_j)`` en la orientación
+        que espera ``conditional_mi`` (x, Y, z), sin importar el orden de
+        (i, j).
+
+        La canonicidad (min, max) y la permutación de ejes viven aquí: el
+        llamador recibe la tabla lista para ``conditional_mi``. Vista O(1)
+        (transpose, sin copia).
+        """
+        t = self.triples[(min(i, j), max(i, j))]
+        if i > j:
+            t = t.transpose(1, 0, 2)  # (n_i, n_j, n_y)
+        return t.transpose(0, 2, 1)  # (n_i, n_y, n_j)
 
     def pair(self, i: int, j: int) -> np.ndarray:
         """Tabla (n_i, n_j) para el par canónico (min, max), marginal sobre Y."""

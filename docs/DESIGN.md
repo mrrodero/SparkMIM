@@ -83,7 +83,7 @@ Bucle greedy único (`selection.greedy_select`) detrás de la costura
 preprocess.py   esquema + preprocesado (etapa 0)
 screen.py       screening univariante (etapa 1)
 significance.py costura SignificanceTest + adaptadores (etapa 1)
-tables.py       tablas conjuntas + TableCache (etapa 2)
+tables.py       tablas conjuntas + TableCache (etapa 2, accesores orientados)
 oracles.py      InformationOracle + adaptadores (costura, etapa 3)
 selection.py    bucle greedy único (etapa 3, driver)
 criteria.py     fórmulas de criterios + pase CMIM (mapInPandas)
@@ -275,6 +275,11 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   codificación → ensamblaje → predicción → métrica y acepta un nombre de
   backend o una fábrica; el coste (2 + |ranking| entrenamientos) y la regla
   de detección de tarea se declaran en la interfaz.
+- **Caché con accesores orientados:** `TableCache.cmi_table(i, j)`
+  (`tables.py`) devuelve la triple en la orientación que esperan las
+  funciones de entropía (x, Y, z), sin importar el orden de (i, j); la
+  canonicidad (min, max) y el conocimiento de ejes viven en un solo sitio
+  (el caché) y `HistogramOracle.cmi_single` queda como fórmula delgada.
 
 ---
 
