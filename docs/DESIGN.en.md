@@ -82,7 +82,7 @@ Single greedy loop (`selection.greedy_select`) behind the
 preprocess.py   schema + preprocessing (stage 0)
 screen.py       univariate screening (stage 1)
 significance.py SignificanceTest seam + adapters (stage 1)
-tables.py       joint tables + TableCache (stage 2)
+tables.py       joint tables + TableCache (stage 2, oriented accessors)
 oracles.py      InformationOracle + adapters (seam, stage 3)
 selection.py    single greedy loop (stage 3, driver)
 criteria.py     criterion formulas + CMIM pass (mapInPandas)
@@ -274,6 +274,11 @@ min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
   assembly → prediction → metric and accepts a backend name or a factory;
   the cost (2 + |ranking| trainings) and the task-detection rule are
   declared in the interface.
+- **Cache with oriented accessors:** `TableCache.cmi_table(i, j)`
+  (`tables.py`) returns the triple in the orientation the entropy functions
+  expect (x, Y, z), regardless of the order of (i, j); canonicalization
+  (min, max) and axis knowledge live in one place (the cache) and
+  `HistogramOracle.cmi_single` stays a thin formula.
 
 ---
 
