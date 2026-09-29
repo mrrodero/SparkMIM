@@ -13,15 +13,19 @@ Atributos:
 
 Métodos:
 - ``transform(df)``: ``df`` con solo las features seleccionadas + el target.
-- ``report(df, model="gbt")``: evaluación (Hito 6, ``evaluate.py``).
+- ``report(df, model="gbt")``: evaluación (Hito 6, ``evaluate.py``) detrás de
+  la costura ``ModelFactory`` (``model_factory.py``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, TYPE_CHECKING
 
 from pyspark.sql import DataFrame
+
+if TYPE_CHECKING:
+    from .model_factory import ModelFactory
 
 
 @dataclass
@@ -49,12 +53,14 @@ class SelectorModel:
         cols = list(self.selected_features) + [self.target]
         return df.select(*cols)
 
-    def report(self, df, model: str = "gbt"):
+    def report(self, df, model: "str | ModelFactory" = "gbt"):
         """Evaluación agnóstica al modelo (AUC/R² vs baseline + curva de eficiencia).
 
-        Entrena ``model`` (``"gbt"`` por defecto, ``"xgboost"``/``"lightgbm"``
-        como extras) sobre las features seleccionadas y sobre todas las
-        features (baseline), y devuelve un ``EvaluationReport``.
+        ``model``: nombre de backend (``"gbt"`` por defecto, ``"xgboost"``/
+        ``"lightgbm"`` como extras) o una ``ModelFactory`` (costura,
+        ``model_factory.py``).
+
+        Coste: ``2 + len(ranking_)`` entrenamientos.
         """
         from .evaluate import report as _report
 
@@ -64,5 +70,5 @@ class SelectorModel:
             selected_features=self.selected_features,
             ranking=ranking_names,
             target_col=self.target,
-            model_name=model,
+            model=model,
         )

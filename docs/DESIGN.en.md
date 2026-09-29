@@ -90,7 +90,8 @@ info/ksg.py     KSG estimator (MI/CMI by kNN)
 info/entropy.py MI/CMI over discrete tables
 selector.py     orchestration of stages 0-3
 model.py        SelectorModel (result + transform/report)
-evaluate.py     evaluation (AUC/R² + efficiency curve)
+model_factory.py ModelFactory seam + adapters (evaluation)
+evaluate.py     evaluation (AUC/R² + efficiency curve, composes the seam)
 ```
 
 ```
@@ -202,7 +203,7 @@ top-`screen_top_k` by MI.
 | **CMI** | Resampling or pairwise approximation | Joint tables in 1 pass over a subsample |
 | **Significance** | Only χ² (driver) | χ² / distributed permutation / no test (+ FDR control) |
 | **Continuous** | Fixed binning | Quantile binning + optional KSG estimator |
-| **Evaluation** | External (sklearn) | Integrated, model-agnostic (GBT/XGBoost/LightGBM) |
+| **Evaluation** | External (sklearn) | Integrated, model-agnostic (GBT/XGBoost/LightGBM behind the `ModelFactory` seam) |
 | **Dependencies** | sklearn, scipy (driver) | Only pyspark, numpy, pandas, scipy (driver) |
 
 **Bottleneck removed:** the scheduling of O(N) jobs in the driver. With single
@@ -229,7 +230,8 @@ loop is driver-only and launches no jobs (except the exact-CMIM pass: 1
 
 **Evaluation:** `efficiency_curve` trains one model per ranking prefix (cost
 O(|ranking|) trainings); with the full-population ranking it scales with N,
-not with K.
+not with K. Training goes through the `ModelFactory` seam
+(`model_factory.py`): 1 training per `train` call.
 
 **Target:** n=10⁶, N=200, K=100, `local[8]` → stage 1 ~1–3 min, stage 2 ~1–3
 min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
@@ -266,6 +268,12 @@ min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
   (`significance.py`) with three adapters (χ², permutation, no test);
   `screen()` only composes tables → MI → significance → top-K and FDR
   control lives inside each adapter.
+- **Evaluation behind a seam:** the `ModelFactory` interface
+  (`model_factory.py`) with three adapters (GBT, XGBoost, LightGBM); the
+  evaluation logic (`evaluate.py`) composes task detection → encoding →
+  assembly → prediction → metric and accepts a backend name or a factory;
+  the cost (2 + |ranking| trainings) and the task-detection rule are
+  declared in the interface.
 
 ---
 

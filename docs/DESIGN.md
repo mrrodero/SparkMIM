@@ -91,7 +91,8 @@ info/ksg.py     estimador KSG (MI/CMI por kNN)
 info/entropy.py MI/CMI sobre tablas discretas
 selector.py     orquestación de las etapas 0-3
 model.py        SelectorModel (resultado + transform/report)
-evaluate.py     evaluación (AUC/R² + curva de eficiencia)
+model_factory.py costura ModelFactory + adaptadores (evaluación)
+evaluate.py     evaluación (AUC/R² + curva de eficiencia, compone la costura)
 ```
 
 ```
@@ -203,7 +204,7 @@ top-`screen_top_k` por MI.
 | **CMI** | Re-muestreo o aproximación por par | Tablas conjuntas en 1 pase sobre subsample |
 | **Significancia** | Solo χ² (driver) | χ² / permutación distribuida / sin test (+ control FDR) |
 | **Continuas** | Binning fijo | Binning cuantil + estimador KSG opcional |
-| **Evaluación** | Externa (sklearn) | Integrada, agnóstica al modelo (GBT/XGBoost/LightGBM) |
+| **Evaluación** | Externa (sklearn) | Integrada, agnóstica al modelo (GBT/XGBoost/LightGBM detrás de la costura `ModelFactory`) |
 | **Dependencias** | sklearn, scipy (driver) | Solo pyspark, numpy, pandas, scipy (driver) |
 
 **Cuello de botella eliminado:** el scheduling de O(N) jobs en driver. Con
@@ -230,7 +231,8 @@ por ronda).
 
 **Evaluación:** `efficiency_curve` entrena un modelo por prefijo del ranking
 (coste O(|ranking|) entrenamientos); con el ranking de población completa
-escala con N, no con K.
+escala con N, no con K. El entrenamiento pasa por la costura `ModelFactory`
+(`model_factory.py`): 1 entrenamiento por llamada a `train`.
 
 **Meta:** n=10⁶, N=200, K=100, `local[8]` → etapa 1 ~1–3 min, etapa 2 ~1–3 min,
 greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
@@ -267,6 +269,12 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   (`significance.py`) con tres adaptadores (χ², permutación, sin test);
   `screen()` solo compone tablas → MI → significancia → top-K y el control
   FDR vive dentro de cada adaptador.
+- **Evaluación detrás de una costura:** la interfaz `ModelFactory`
+  (`model_factory.py`) con tres adaptadores (GBT, XGBoost, LightGBM); la
+  lógica de evaluación (`evaluate.py`) compone detección de tarea →
+  codificación → ensamblaje → predicción → métrica y acepta un nombre de
+  backend o una fábrica; el coste (2 + |ranking| entrenamientos) y la regla
+  de detección de tarea se declaran en la interfaz.
 
 ---
 
