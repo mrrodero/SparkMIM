@@ -253,3 +253,26 @@ def test_ksg_transform(df):
     for f in model.selected_features:
         assert f in out_cols
     assert len(out.columns) == len(model.selected_features) + 1
+
+
+# --- Modo KSG: columnas no numéricas → error claro en fit ---
+
+
+def test_ksg_rejects_non_numeric_feature(spark):
+    """Feature string con KSG: ValueError claro (no crash en to_numpy)."""
+    rows = [(1.0, "a", 2.0), (2.0, "b", 3.0), (3.0, "a", 4.0)]
+    df = spark.createDataFrame(rows, ["x0", "cat", "y"])
+    with pytest.raises(ValueError) as excinfo:
+        InfoSelector(target="y", estimator="ksg", ksg_k=10).fit(df)
+    assert "cat" in str(excinfo.value)
+    assert "numéricas" in str(excinfo.value)
+
+
+def test_ksg_rejects_non_numeric_target(spark):
+    """Target string con KSG: ValueError claro nombrando la columna."""
+    rows = [(1.0, "ok"), (2.0, "ok"), (3.0, "ok")]
+    df = spark.createDataFrame(rows, ["x0", "y"])
+    with pytest.raises(ValueError) as excinfo:
+        InfoSelector(target="y", estimator="ksg", ksg_k=10).fit(df)
+    assert "y" in str(excinfo.value)
+    assert "numéricas" in str(excinfo.value)

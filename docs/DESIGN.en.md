@@ -279,6 +279,11 @@ min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
   expect (x, Y, z), regardless of the order of (i, j); canonicalization
   (min, max) and axis knowledge live in one place (the cache) and
   `HistogramOracle.cmi_single` stays a thin formula.
+- **Mode-aware config:** `SelectorConfig` declares per-mode relevance in one
+  place (histogram / KSG / shared fields); a field of the other mode that
+  differs from its default raises `ValueError` at construction, and KSG mode
+  requires numeric columns with a clear error in `fit` (not a deep crash in
+  `to_numpy`).
 
 ---
 

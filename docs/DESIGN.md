@@ -280,6 +280,11 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   funciones de entropía (x, Y, z), sin importar el orden de (i, j); la
   canonicidad (min, max) y el conocimiento de ejes viven en un solo sitio
   (el caché) y `HistogramOracle.cmi_single` queda como fórmula delgada.
+- **Config por modo:** `SelectorConfig` declara la relevancia por modo en un
+  solo sitio (campos de histograma / de KSG / compartidos); un campo del otro
+  modo distinto de su valor por defecto lanza `ValueError` en la
+  construcción, y el modo KSG exige columnas numéricas con error claro en
+  `fit` (no un crash profundo en `to_numpy`).
 
 ---
 
