@@ -23,6 +23,7 @@ from sparkmim.significance import (
     make_significance_test,
     permutation_pvalue,
 )
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -144,13 +145,17 @@ def _make_perm_df(spark, n, seed):
     - x_indep: independiente de y (ruido).
     - x_noise: independiente de y (ruido; la de menor MI).
     """
-    rng = np.random.default_rng(seed)
-    y = rng.integers(0, 2, size=n)
-    x_dep = np.where(rng.random(n) < 0.9, y, 1 - y)
-    x_indep = rng.integers(0, 2, size=n)
-    x_noise = rng.integers(0, 2, size=n)
-    rows = [(int(a), int(b), int(c), int(d)) for a, b, c, d in zip(x_dep, x_indep, x_noise, y)]
-    return spark.createDataFrame(rows, ["x_dep", "x_indep", "x_noise", "y"])
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x_dep", "correlated", agreement=0.9),
+            Feature("x_indep", "independent", kind="bernoulli"),
+            Feature("x_noise", "independent", kind="bernoulli"),
+        ],
+        Target(kind="flip"),
+    )
+    return to_spark_df(spark, data)
 
 
 def test_permutation_adapter(spark):

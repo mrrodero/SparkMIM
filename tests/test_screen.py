@@ -12,6 +12,7 @@ from pyspark.sql import SparkSession
 from sparkmim.config import SelectorConfig
 from sparkmim.schema import FeatureSpec, Schema
 from sparkmim.screen import screen, select_candidates
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -36,13 +37,17 @@ def _make_screen_df(spark, n=2000, seed=0):
     - x1: 70% correlada con y (moderada).
     - x2: independiente de y (ruido).
     """
-    rng = np.random.default_rng(seed)
-    y = rng.integers(0, 2, size=n)
-    x0 = np.where(rng.random(n) < 0.8, y, 1 - y)
-    x1 = np.where(rng.random(n) < 0.7, y, 1 - y)
-    x2 = rng.integers(0, 2, size=n)
-    rows = [(int(a), int(b), int(c), int(d)) for a, b, c, d in zip(x0, x1, x2, y)]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "y"])
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "correlated", agreement=0.8),
+            Feature("x1", "correlated", agreement=0.7),
+            Feature("x2", "independent", kind="bernoulli"),
+        ],
+        Target(kind="flip"),
+    )
+    return to_spark_df(spark, data)
 
 
 def test_select_candidates_pure():

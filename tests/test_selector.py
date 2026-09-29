@@ -3,14 +3,13 @@
 Estructura plantada:
 - ``x0``, ``x1``: informativas (``y = x0 AND x1`` con ruido 10%).
 - ``x2``: independiente de ``y``.
-- ``x3``: casi redundante con ``x0`` (``x0`` con ruido 5%).
+- ``x3``: redundante exacta con ``x0``.
 
 Con ``significance="chi2"`` (default), el screening descarta ``x2`` (MI≈0)
 antes del greedy; el greedy descarta ``x3`` (redundante). Se verifica que el
 resultado sea ``{x0, x1}`` para cada criterio.
 """
 
-import numpy as np
 import pytest
 from pyspark.sql import SparkSession
 
@@ -21,6 +20,7 @@ from sparkmim import (
     MIMSelector,
     MRMRSelector,
 )
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -39,20 +39,22 @@ def spark():
 
 
 def _make_df(spark, n, seed):
-    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta)."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.integers(0, 2, size=n)
-    x1 = rng.integers(0, 2, size=n)
-    x2 = rng.integers(0, 2, size=n)
-    x3 = x0.copy()  # redundante exacta: CMI(x3; y | x0) = 0.
-    y = (x0 & x1).astype(int)
-    noise = rng.random(n) < 0.1
-    y = np.where(noise, 1 - y, y)
-    rows = [
-        (str(a), str(b), str(c), str(d), str(e))
-        for a, b, c, d, e in zip(x0, x1, x2, x3, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "y"])
+    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta).
+
+    ``y = x0 AND x1`` con 10% de ruido (ver ``planted.make_planted``).
+    """
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "informative", kind="bernoulli"),
+            Feature("x1", "informative", kind="bernoulli"),
+            Feature("x2", "independent", kind="bernoulli"),
+            Feature("x3", "redundant", copy_of="x0"),
+        ],
+        Target(kind="and", noise=0.1),
+    )
+    return to_spark_df(spark, data, as_strings=True)
 
 
 @pytest.fixture(scope="module")
