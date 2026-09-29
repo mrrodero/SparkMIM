@@ -29,6 +29,7 @@ from sparkmim import (
     report,
     train_and_evaluate,
 )
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -158,54 +159,44 @@ class TrivialFactory:
         return df_vec.withColumn("prediction", F.lit(float(mean)))
 
 
+_FEATS = [
+    Feature("x0", "informative"),
+    Feature("x1", "informative"),
+    Feature("x2", "independent"),
+    Feature("x3", "independent"),
+    Feature("x4", "independent"),
+]
+
+
 def _make_df(spark, n, seed):
-    """x0, x1 informativas; x2..x4 ruido; y binaria."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.normal(size=n)
-    x1 = rng.normal(size=n)
-    x2 = rng.normal(size=n)
-    x3 = rng.normal(size=n)
-    x4 = rng.normal(size=n)
-    logit = x0 + x1 + 0.5 * rng.normal(size=n)
-    y = (logit > 0).astype(int)
-    rows = [
-        (float(a), float(b), float(c), float(d), float(e), int(f))
-        for a, b, c, d, e, f in zip(x0, x1, x2, x3, x4, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "x4", "y"])
+    """x0, x1 informativas; x2..x4 ruido; y binaria.
+
+    ``y = (x0 + x1 + 0.5·N(0, 1) > 0)`` (ver ``planted.make_planted``).
+    """
+    data = make_planted(
+        n, seed, _FEATS, Target(kind="linear", noise=0.5, thresholds=(0.0,))
+    )
+    return to_spark_df(spark, data)
 
 
 def _make_df_multiclass(spark, n, seed):
-    """x0, x1 informativas; x2..x4 ruido; y con 3 clases."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.normal(size=n)
-    x1 = rng.normal(size=n)
-    x2 = rng.normal(size=n)
-    x3 = rng.normal(size=n)
-    x4 = rng.normal(size=n)
-    logit = x0 + x1 + 0.5 * rng.normal(size=n)
-    y = (logit > 0).astype(int) + ((logit > 0.5).astype(int))  # 0, 1, 2
-    rows = [
-        (float(a), float(b), float(c), float(d), float(e), int(f))
-        for a, b, c, d, e, f in zip(x0, x1, x2, x3, x4, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "x4", "y"])
+    """x0, x1 informativas; x2..x4 ruido; y con 3 clases (0, 1, 2).
+
+    ``y = int(score > 0) + int(score > 0.5)`` (ver ``planted.make_planted``).
+    """
+    data = make_planted(
+        n, seed, _FEATS, Target(kind="linear", noise=0.5, thresholds=(0.0, 0.5))
+    )
+    return to_spark_df(spark, data)
 
 
 def _make_df_reg(spark, n, seed):
-    """x0, x1 informativas; x2..x4 ruido; y continua (regresión)."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.normal(size=n)
-    x1 = rng.normal(size=n)
-    x2 = rng.normal(size=n)
-    x3 = rng.normal(size=n)
-    x4 = rng.normal(size=n)
-    y = x0 + x1 + 0.5 * rng.normal(size=n)
-    rows = [
-        (float(a), float(b), float(c), float(d), float(e), float(f))
-        for a, b, c, d, e, f in zip(x0, x1, x2, x3, x4, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "x4", "y"])
+    """x0, x1 informativas; x2..x4 ruido; y continua (regresión).
+
+    ``y = x0 + x1 + 0.5·N(0, 1)`` (ver ``planted.make_planted``).
+    """
+    data = make_planted(n, seed, _FEATS, Target(kind="linear", noise=0.5))
+    return to_spark_df(spark, data)
 
 
 @pytest.fixture(scope="module")

@@ -43,6 +43,12 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   compartidos); un campo del otro modo distinto de su valor por defecto lanza
   `ValueError` en la construcción; el modo KSG exige columnas numéricas con
   error claro en `fit` (no un crash profundo en `to_numpy`).
+- **Generador de estructura plantada compartido** (`tests/planted.py`,
+  `benchmarks/synthetic.py`): los tests (selector, KSG, evaluación, screening,
+  significancia) y el benchmark comparten un único generador parametrizado por
+  roles de feature (informativa/independiente/redundante/correlada) y modo de
+  target (`and`/`linear`/`flip`); `benchmarks/synthetic.generate` queda como
+  adaptador fino sobre `planted.make_planted` (misma firma, mismos errores).
 
 ### Fixed
 

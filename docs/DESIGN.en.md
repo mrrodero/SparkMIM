@@ -284,6 +284,12 @@ min, greedy ~seconds. **End-to-end < 15 min** (validated by the benchmark).
   differs from its default raises `ValueError` at construction, and KSG mode
   requires numeric columns with a clear error in `fit` (not a deep crash in
   `to_numpy`).
+- **Shared planted-structure generator:** `tests/planted.py` defines the
+  planted structure once (feature roles: informative/independent/redundant/
+  correlated; target modes: `and`, `linear` with thresholds, `flip`); the
+  tests (selector, KSG, evaluation, screening, significance) and
+  `benchmarks/synthetic.generate` consume it, so changing the planted
+  structure is a one-place change.
 
 ---
 

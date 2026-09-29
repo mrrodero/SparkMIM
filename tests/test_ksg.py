@@ -11,6 +11,7 @@ import pytest
 from pyspark.sql import SparkSession
 
 from sparkmim import InfoSelector, JMIMSelector, ksg_cmi, ksg_mi
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -96,18 +97,22 @@ def test_ksg_cmi_zero_when_conditioned_on_self():
 
 
 def _make_df(spark, n, seed):
-    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta)."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.normal(size=n)
-    x1 = rng.normal(size=n)
-    x2 = rng.normal(size=n)
-    x3 = x0.copy()  # redundante exacta.
-    y = x0 + x1 + 0.1 * rng.normal(size=n)
-    rows = [
-        (float(a), float(b), float(c), float(d), float(e))
-        for a, b, c, d, e in zip(x0, x1, x2, x3, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "y"])
+    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta).
+
+    ``y = x0 + x1 + 0.1·N(0, 1)`` (ver ``planted.make_planted``).
+    """
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "informative"),
+            Feature("x1", "informative"),
+            Feature("x2", "independent"),
+            Feature("x3", "redundant", copy_of="x0"),
+        ],
+        Target(kind="linear", noise=0.1),
+    )
+    return to_spark_df(spark, data)
 
 
 @pytest.fixture(scope="module")
@@ -158,7 +163,12 @@ def test_ksg_mrmr_selects_informative(df):
 
 
 def _make_df_wide(spark, n, seed, weights):
-    """6 features; ``weights[i]`` es el coeficiente de ``x_i`` en ``y``."""
+    """6 features; ``weights[i]`` es el coeficiente de ``x_i`` en ``y``.
+
+    Se queda inline (no usa ``planted``): el único draw de matriz
+    ``rng.normal((n, 6))`` no encaja en el modelo de draws por feature del
+    generador compartido.
+    """
     rng = np.random.default_rng(seed)
     x = rng.normal(size=(n, 6))
     y = sum(w * x[:, i] for i, w in enumerate(weights)) + 0.1 * rng.normal(size=n)

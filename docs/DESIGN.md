@@ -285,6 +285,12 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   modo distinto de su valor por defecto lanza `ValueError` en la
   construcción, y el modo KSG exige columnas numéricas con error claro en
   `fit` (no un crash profundo en `to_numpy`).
+- **Generador de estructura plantada compartido:** `tests/planted.py`
+  define la estructura plantada una sola vez (roles de feature:
+  informativa/independiente/redundante/correlada; modos de target: `and`,
+  `linear` con umbrales, `flip`); los tests (selector, KSG, evaluación,
+  screening, significancia) y `benchmarks/synthetic.generate` la consumen,
+  de modo que cambiar la estructura plantada es un cambio en un solo sitio.
 
 ---
 
