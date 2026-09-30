@@ -11,7 +11,7 @@ from pyspark.sql import SparkSession
 
 from sparkmim.config import SelectorConfig
 from sparkmim.schema import FeatureSpec, Schema
-from sparkmim.screen import screen, select_candidates
+from sparkmim.screen import rank, screen, select_candidates
 from planted import Feature, Target, make_planted, to_spark_df
 
 
@@ -59,6 +59,17 @@ def test_select_candidates_pure():
     assert select_candidates(mi, np.zeros(4, dtype=bool), 2) == []
     # k mayor que el nº de significativas => todas, en orden de MI.
     assert select_candidates(mi, significant, 10) == [0, 3, 1]
+
+
+def test_rank_pure():
+    # Descendente por MI; estable en empates (conserva el orden de entrada).
+    mi = np.array([0.5, 1.0, 0.5, 2.0])
+    names = ["a", "b", "c", "d"]
+    assert rank(mi, names) == [("d", 2.0), ("b", 1.0), ("a", 0.5), ("c", 0.5)]
+
+
+def test_rank_empty():
+    assert rank(np.array([]), []) == []
 
 
 def _make_schema():

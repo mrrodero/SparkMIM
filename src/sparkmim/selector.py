@@ -41,7 +41,7 @@ from .model import SelectorModel
 from .schema import resolve_task
 from .oracles import HistogramOracle, KsgOracle
 from .preprocess import prepare
-from .screen import screen
+from .screen import rank, screen, select_candidates
 from .selection import greedy_select
 from .tables import (
     TableCache,
@@ -56,6 +56,7 @@ __all__ = [
     "CMIMSelector",
     "MRMRSelector",
     "MIMSelector",
+    "subsample",
 ]
 
 # Tipos numéricos que el modo KSG acepta como features.
@@ -76,6 +77,21 @@ _KSG_TARGET_TYPES = _KSG_NUMERIC_TYPES + (
     DateType,
     TimestampType,
 )
+
+
+def subsample(df: DataFrame, n: int, seed: int) -> DataFrame:
+    """Submuestra sin reemplazo de ≈ ``n`` filas (semilla fija).
+
+    Política compartida de reducción de filas: la etapa 2 del modo
+    histograma (``config.subsample``) y la preparación del modo KSG
+    (``config.ksg_subsample``). Identidad si el frame ya tiene ≤ ``n``
+    filas; determinista con ``seed``.
+    """
+    n_total = int(df.count())
+    if n_total <= n:
+        return df
+    fraction = n / n_total
+    return df.sample(withReplacement=False, fraction=fraction, seed=seed)
 
 
 class InfoSelector:
@@ -106,10 +122,9 @@ class InfoSelector:
         t0 = time.perf_counter()
 
         # Modo KSG (opcional): subsample al driver + MI/CMI por kNN (sin binning).
+        # Los timings por etapa (etapa0/1/3 + total) los pone ``_fit_ksg``.
         if config.estimator == "ksg":
-            model = self._fit_ksg(df, config)
-            model.timings_ = {"total": time.perf_counter() - t0}
-            return model
+            return self._fit_ksg(df, config)
 
         # Etapa 0: esquema + preprocesado.
         t = time.perf_counter()
@@ -128,10 +143,7 @@ class InfoSelector:
         feature_names = schema.feature_names()
         # Ranking: población completa (N features) por MI univariante de
         # screening, descendente. Sin coste adicional: reutiliza la etapa 1.
-        ranking = sorted(
-            [(feature_names[i], float(screen_result.mi[i])) for i in range(len(feature_names))],
-            key=lambda t: -t[1],
-        )
+        ranking = rank(screen_result.mi, feature_names)
         if K == 0:
             timings["total"] = time.perf_counter() - t0
             return SelectorModel(
@@ -160,7 +172,7 @@ class InfoSelector:
 
         # Etapa 2: subsample + tablas conjuntas → TableCache.
         t = time.perf_counter()
-        sub = self._subsample(df_prep, config)
+        sub = subsample(df_prep, config.subsample, config.seed)
         rows_df = build_joint_tables(sub, candidate_cols, target_col, candidate_n_codes, n_y)
         triples = dense_from_joints(rows_df, candidate_n_codes, n_y)
         # Univariantes: tabla de screening de cada candidata (índice de candidata).
@@ -201,24 +213,15 @@ class InfoSelector:
         return model
 
     # ------------------------------------------------------------------
-    # Subsample (lo comparten la etapa 2 y el pase CMIM).
-    # ------------------------------------------------------------------
-    def _subsample(self, df: DataFrame, config: SelectorConfig) -> DataFrame:
-        """Subsample sin reemplazo a ≤ ``subsample`` filas (semilla fija)."""
-        n_total = int(df.count())
-        if n_total <= config.subsample:
-            return df
-        fraction = config.subsample / n_total
-        return df.sample(withReplacement=False, fraction=fraction, seed=config.seed)
-
-    # ------------------------------------------------------------------
-    # Ruta KSG: sin binning, subsample ≤ ``ksg_subsample`` al driver.
+    # Ruta KSG: sin binning, subsample ≈ ``ksg_subsample`` al driver.
     # ------------------------------------------------------------------
     def _fit_ksg(self, df: DataFrame, config: SelectorConfig) -> SelectorModel:
-        """Ruta KSG: sin binning, subsample ≤ ``ksg_subsample`` al driver.
+        """Ruta KSG: sin binning, subsample ≈ ``ksg_subsample`` al driver.
 
-        Etapa 1: MI por KSG (driver, población completa). Etapa 3: greedy
-        detrás de ``KsgOracle`` (posiciones de candidata).
+        Etapa 0: Task + validación de dtypes + nombres de features.
+        Etapa 1: subsample al driver + MI por KSG (población completa) +
+        corte top-K (``select_candidates``) + ranking (``rank``).
+        Etapa 3: greedy detrás de ``KsgOracle`` (posiciones de candidata).
 
         La Task se resuelve una vez aquí (regla compartida,
         ``schema.resolve_task``) y se lleva en el ``SelectorModel``. Las
@@ -227,6 +230,10 @@ class InfoSelector:
         valores distintos se codifican sin pérdida). Errores claros aquí, no
         crashes profundos.
         """
+        timings: Dict[str, float] = {}
+        t0 = time.perf_counter()
+
+        # Etapa 0: Task + validación de dtypes + nombres de features.
         target_col = config.target
         task = resolve_task(df, target_col, config.task)
         feature_cols = [c for c in df.columns if c != target_col]
@@ -254,14 +261,12 @@ class InfoSelector:
                     f"target '{target_col}': {target_dtype}"
                 )
         n_total = int(df.count())
-        if n_total <= config.ksg_subsample:
-            df_sub = df
-        else:
-            fraction = config.ksg_subsample / n_total
-            df_sub = df.sample(withReplacement=False, fraction=fraction, seed=config.seed)
+        timings["etapa0"] = time.perf_counter() - t0
 
-        # Al driver como pandas → numpy.
-        pdf = df_sub.toPandas()
+        # Etapa 1: subsample al driver + MI por KSG (población completa).
+        t = time.perf_counter()
+        df_sub = subsample(df, config.ksg_subsample, config.seed)
+        pdf = df_sub.toPandas()  # al driver como pandas → numpy.
         X = pdf[feature_cols].to_numpy(dtype=float)  # n_sub × N
         if task == "continuous":
             y = pdf[target_col].to_numpy(dtype=float)  # n_sub
@@ -270,6 +275,8 @@ class InfoSelector:
             _, y = np.unique(pdf[target_col].to_numpy(), return_inverse=True)
         N = X.shape[1]
         if N == 0:
+            timings["etapa1"] = time.perf_counter() - t
+            timings["total"] = time.perf_counter() - t0
             return SelectorModel(
                 selected_features=[],
                 scores_=[],
@@ -278,18 +285,21 @@ class InfoSelector:
                 n_rows=n_total,
                 target=target_col,
                 task=task,
+                timings_=timings,
             )
 
-        # Etapa 1: MI por KSG para cada feature (población completa).
+        # MI por KSG para cada feature (población completa).
         mi_all = np.array([ksg_mi(X[:, i], y, config.ksg_k) for i in range(N)])
 
-        # Screening: top-K por MI (descendente). Sin filtro de significancia
-        # con el estimador KSG (implementación pendiente).
-        order = np.argsort(-mi_all, kind="stable")
-        K = min(config.screen_top_k, N)
-        cand = [int(i) for i in order[:K]]
+        # Top-K: la política compartida de la etapa 1. Sin filtro de
+        # significancia con el estimador KSG (implementación pendiente).
+        cand = select_candidates(mi_all, np.ones(N, dtype=bool), config.screen_top_k)
+        # Ranking: población completa (N features) por MI.
+        ranking = rank(mi_all, feature_cols)
+        timings["etapa1"] = time.perf_counter() - t
 
         # Etapa 3: oráculo + greedy (posiciones de candidata).
+        t = time.perf_counter()
         oracle = KsgOracle(X[:, cand], y, config.ksg_k)
         result = greedy_select(
             oracle,
@@ -299,13 +309,10 @@ class InfoSelector:
             config.max_features,
             config.cmim_m,
         )
+        timings["etapa3"] = time.perf_counter() - t
 
-        # Ranking: población completa (N features) por MI.
-        ranking = sorted(
-            [(feature_cols[i], float(mi_all[i])) for i in range(N)],
-            key=lambda t: -t[1],
-        )
         selected_features = [feature_cols[cand[i]] for i in result.selected]
+        timings["total"] = time.perf_counter() - t0
         return SelectorModel(
             selected_features=selected_features,
             scores_=result.scores,
@@ -314,6 +321,7 @@ class InfoSelector:
             n_rows=n_total,
             target=target_col,
             task=task,
+            timings_=timings,
         )
 
 

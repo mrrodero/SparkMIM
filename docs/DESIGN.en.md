@@ -51,14 +51,18 @@ each feature → a `groupBy` → driver. Per feature:
 - **Significance:** `SignificanceTest` interface with three adapters (χ²,
   distributed permutation, no test) + FDR control (see §4).
 - **Candidates C:** top-`screen_top_k` by MI among those passing the
-  significance filter.
+  significance filter. The cut policy is the shared pure
+  `screen.select_candidates` (the KSG mode reuses it without the significance
+  filter, pending).
 
 ### Stage 2 — Joint tables (1 pass over a subsample)
 
-Over a subsample ≤ `subsample` (10⁶) rows, a `mapInPandas` emits the joint
-tables of **pairs** and **triples** `(x_i, x_j, y)` for the candidates →
-driver → `TableCache`. This allows computing CMI exactly (or approximately) in
-stage 3 without touching the data again.
+Over a subsample ≤ `subsample` (10⁶) rows — the shared `selector.subsample`
+policy, the same one the KSG mode applies with `ksg_subsample` — a
+`mapInPandas` emits the joint tables of **pairs** and **triples**
+`(x_i, x_j, y)` for the candidates → driver → `TableCache`. This allows
+computing CMI exactly (or approximately) in stage 3 without touching the data
+again.
 
 ### Stage 3 — Greedy selection (driver only)
 
@@ -76,9 +80,9 @@ Single greedy loop (`selection.greedy_select`) behind the
 - **Subsequent rounds:** score each unselected candidate with the criterion
   (JMIM/CMIM/mRMR/mIM) and pick the argmax.
 - **Stopping:** `best_score < min_score` or `max_features` reached.
-- **Ranking:** full population (N features) by univariate MI (descending):
-  screening MI in the histogram estimator (no extra cost) and kNN MI in the
-  KSG estimator.
+- **Ranking:** full population (N features) by univariate MI (descending),
+  derived by the shared pure `screen.rank`: screening MI in the histogram
+  estimator (no extra cost) and kNN MI in the KSG estimator.
 
 ### Module map
 
@@ -172,6 +176,11 @@ to 0.
 > global kNN in the driver; suitable for moderate n, not for 10⁷. For
 > classification, the target is coded losslessly per distinct value and
 > treated as a numeric variable in the kNN (no binning required).
+>
+> **Real stage 1:** the KSG mode shares the stage-1 policy with the histogram
+> mode — top-K cut by `screen.select_candidates` (without the significance
+> filter, pending) and ranking by `screen.rank` — and exposes per-stage
+> timings (`etapa0`, `etapa1`, `etapa3` and `total`; there is no stage 2).
 
 ---
 
