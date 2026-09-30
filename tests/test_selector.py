@@ -21,6 +21,7 @@ from sparkmim import (
     MIMSelector,
     MRMRSelector,
 )
+from sparkmim.selector import subsample
 from planted import Feature, Target, make_planted, to_spark_df
 
 
@@ -162,6 +163,24 @@ def test_transform(df):
 def test_invalid_criterion_raises():
     with pytest.raises(ValueError):
         InfoSelector(target="y", criterion="bogus")
+
+
+# --- subsample (política compartida de reducción de filas) ---
+
+
+def test_subsample_identity_when_small(df):
+    # n=4000 ≤ 5000 → identidad (mismo frame, sin re-muestrear).
+    out = subsample(df, 5000, 42)
+    assert out.count() == 4000
+
+
+def test_subsample_reduces_and_is_deterministic(df):
+    # n=4000 > 1000 → submuestra sin reemplazo de ≈ 1000 filas (la fracción
+    # de Spark es probabilística, no exacta), determinista con la semilla.
+    a = subsample(df, 1000, 42)
+    b = subsample(df, 1000, 42)
+    assert 0 < a.count() < 4000
+    assert a.collect() == b.collect()
 
 
 # --- Task: fit + report (histograma, target entero) ---

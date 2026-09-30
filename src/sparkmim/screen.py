@@ -16,7 +16,7 @@ Este módulo solo compone: tablas → MI → significancia → top-K.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from pyspark.sql import DataFrame
@@ -27,7 +27,7 @@ from .schema import Schema
 from .significance import SignificanceInput, make_significance_test
 from .tables import build_screening_tables, dense_from_screening
 
-__all__ = ["ScreenResult", "screen", "select_candidates"]
+__all__ = ["ScreenResult", "screen", "select_candidates", "rank"]
 
 
 @dataclass
@@ -74,6 +74,22 @@ def select_candidates(
     sig_idx = np.where(significant)[0]
     order = sig_idx[np.argsort(-mi[sig_idx], kind="stable")]
     return [int(i) for i in order[:k]]
+
+
+def rank(mi: np.ndarray, names: Sequence[str]) -> List[Tuple[str, float]]:
+    """Ranking de la población completa por MI descendente (estable en empates).
+
+    La política de ranking compartida de la etapa 1 (modo histograma y modo
+    KSG); pura (sin Spark).
+
+    Args:
+        mi: ``MI(X_i; Y)`` por feature (nats), longitud N.
+        names: nombre de cada feature (longitud N).
+
+    Returns:
+        Pares ``(nombre, mi)`` en orden descendente de MI.
+    """
+    return sorted(zip(names, (float(m) for m in mi)), key=lambda t: -t[1])
 
 
 def screen(

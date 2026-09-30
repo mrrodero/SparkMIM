@@ -62,6 +62,13 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   y `report` (mapa a `"classifier_multiclass"` / `"continuous"`). El modo KSG
   ahora soporta clasificación: target no numérico con codificación lossless
   por valor distinto (ADR-0002).
+- **Etapa 1 real del modo KSG** (`screen.py`, `selector.py`): el modo KSG
+  comparte la política de la etapa 1 con el histograma — corte top-K por la
+  pura `screen.select_candidates` (sin filtro de significancia, pendiente) y
+  ranking de población por la pura `screen.rank` — y expone timings por etapa
+  (`etapa0`, `etapa1`, `etapa3` y `total`; no hay etapa 2). La reducción de
+  filas se unifica en la función compartida a nivel de módulo
+  `selector.subsample` (etapa 2 con `subsample`, KSG con `ksg_subsample`).
 
 ### Fixed
 

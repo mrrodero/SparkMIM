@@ -154,6 +154,42 @@ def test_ksg_mrmr_selects_informative(df):
     assert "x2" not in model.selected_features
 
 
+def test_ksg_subsample_branch(df):
+    """n=3000 > ksg_subsample=1000: rama de subsample (compartida) y el
+    resultado no cambia; ``n_rows`` sigue siendo el total."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        ksg_subsample=1000,
+        max_features=5,
+        screen_top_k=10,
+        seed=42,
+    ).fit(df)
+    assert "x0" in model.selected_features
+    assert "x1" in model.selected_features
+    assert "x2" not in model.selected_features
+    assert model.n_rows == 3000
+
+
+def test_ksg_timings(df):
+    """Timings del modo KSG: etapa0/etapa1/etapa3 + total (sin etapa2)."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=5,
+        screen_top_k=10,
+        seed=42,
+    ).fit(df)
+    for key in ("etapa0", "etapa1", "etapa3", "total"):
+        assert key in model.timings_
+        assert model.timings_[key] >= 0.0
+    assert "etapa2" not in model.timings_
+
+
 # --- Regresión: índice global vs posición en candidatas (estimador KSG) ---
 #
 # El greedy trabaja en posiciones de candidata (0..K-1). El código antiguo
