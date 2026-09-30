@@ -10,6 +10,8 @@ Atributos:
 - ``criterion``: criterio usado (``"mrmr" | "mim" | "jmi" | "jmim" | "cmim"``).
 - ``n_rows``: nº de filas de ``df_prep``.
 - ``target``: nombre de la columna target.
+- ``task``: Task del Target resuelta en la etapa 0 (``"classifier_binary"`` |
+  ``"classifier_multiclass"`` | ``"continuous"``).
 
 Métodos:
 - ``transform(df)``: ``df`` con solo las features seleccionadas + el target.
@@ -36,6 +38,7 @@ class SelectorModel:
     criterion: str
     n_rows: int
     target: str
+    task: str
     # Wall-time (s) por etapa, si se midió (benchmark). Vacío si no.
     timings_: Dict[str, float] = field(default_factory=dict)
 
@@ -70,5 +73,6 @@ class SelectorModel:
             selected_features=self.selected_features,
             ranking=ranking_names,
             target_col=self.target,
+            task=self.task,
             model=model,
         )

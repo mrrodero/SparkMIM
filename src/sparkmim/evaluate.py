@@ -1,7 +1,8 @@
 """Evaluación agnóstica al modelo (Hito 6).
 
-La lógica de evaluación no entrena modelos directamente: detecta la tarea
-(``detect_task``), codifica las columnas categóricas, ensambla el vector
+La lógica de evaluación no entrena modelos directamente: resuelve la task
+declarada (regla compartida ``schema.resolve_task``; ``task=None`` →
+``"auto"``), codifica las columnas categóricas, ensambla el vector
 ``features`` y pasa el df vectorizado a una ``ModelFactory``
 (``model_factory.py``) — la costura entre la lógica de evaluación y los
 backends (docs/DESIGN.md §2, §7). La fábrica entrena y devuelve el df de
@@ -13,9 +14,10 @@ predicciones; la métrica se computa en el driver.
 - Costura ``ModelFactory``: adaptadores ``GbtFactory`` (default),
   ``XgboostFactory`` y ``LightgbmFactory`` (extras opcionales, import
   perezoso); para tests, un adaptador trivial determinista sin Spark ML.
-- Detección de tarea: string → clasificación; float/double → regresión;
-  entero → clasificación si ≤ 20 valores distintos (1 job de Spark), si no
-  regresión.
+- Task: la declarada llega resuelta (3 valores) o se resuelve aquí con la
+  regla ``auto``. El vocabulario legacy ``"classification"`` /
+  ``"regression"`` sigue aceptándose y se mapea a ``"classifier_multiclass"``
+  / ``"continuous"``.
 """
 
 from __future__ import annotations
@@ -25,18 +27,18 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from pyspark.sql import DataFrame
-from pyspark.sql.types import DoubleType, FloatType, StringType
+from pyspark.sql.types import StringType
 
 from scipy.stats import rankdata
 
 from .model_factory import ModelFactory, make_model_factory
+from .schema import _CLASSIFICATION_TASKS, resolve_task
 
 __all__ = [
     "EvaluationReport",
     "auc_binary",
     "auc_macro",
     "r2_score",
-    "detect_task",
     "report",
     "efficiency_curve",
     "train_and_evaluate",
@@ -91,23 +93,34 @@ def r2_score(y_true, y_pred) -> float:
 
 
 # ----------------------------------------------------------------------
-# Detección de tarea y preparación (codificación de categóricas).
+# Resolución de task y preparación (codificación de categóricas).
 # ----------------------------------------------------------------------
-def detect_task(df: DataFrame, target_col: str) -> str:
-    """``'classification'`` | ``'regression'`` según el dtype del target.
+# Vocabulario legacy de evaluate: se mapea a la task resuelta.
+_LEGACY_TASKS = {
+    "classification": "classifier_multiclass",
+    "regression": "continuous",
+}
+# Tareas ya resueltas: se dejan pasar sin revalidar (la validación contra
+# los datos la hizo ``resolve_task`` en la etapa 0 o en la llamada
+# standalone).
+_RESOLVED_TASKS = ("classifier_binary", "classifier_multiclass", "continuous")
 
-    Regla: string → clasificación; float/double → regresión; entero →
-    clasificación si ≤ 20 valores distintos (1 job de Spark), si no
-    regresión.
+
+def _normalize_task(task, df: DataFrame, target_col: str) -> str:
+    """Resuelve la task declarada con la regla compartida.
+
+    ``None`` → ``"auto"``; el vocabulario legacy (``"classification"`` /
+    ``"regression"``) se mapea a la task resuelta; las tareas ya resueltas
+    se dejan pasar. ``"auto"`` y cualquier otro valor se validan contra
+    los datos (``schema.resolve_task``).
     """
-    dtype = df.schema[target_col].dataType
-    if isinstance(dtype, StringType):
-        return "classification"
-    if isinstance(dtype, (FloatType, DoubleType)):
-        return "regression"
-    # Entero: clasificación si pocas clases distintas.
-    n_unique = int(df.select(target_col).distinct().count())
-    return "classification" if n_unique <= 20 else "regression"
+    if task is None:
+        task = "auto"
+    if task in _LEGACY_TASKS:
+        return _LEGACY_TASKS[task]
+    if task in _RESOLVED_TASKS:
+        return task
+    return resolve_task(df, target_col, task)
 
 
 def _encode_columns(df: DataFrame, cols: Sequence[str]) -> Tuple[DataFrame, List[str]]:
@@ -150,11 +163,10 @@ def train_and_evaluate(
     ``model``: nombre de backend (``"gbt"``/``"xgboost"``/``"lightgbm"``) o
     una ``ModelFactory`` (costura, ``model_factory.py``).
 
-    Coste: 1 entrenamiento. Si ``task`` es None se detecta con
-    ``detect_task``.
+    Coste: 1 entrenamiento. Si ``task`` es None se resuelve con la regla
+    ``auto`` (vocabulario legacy aceptado).
     """
-    if task is None:
-        task = detect_task(df, target_col)
+    task = _normalize_task(task, df, target_col)
     factory = _resolve_model(model)
     # Target: codifica si es string.
     df_t, label_col = _encode_columns(df, [target_col]) if isinstance(
@@ -168,7 +180,7 @@ def train_and_evaluate(
     # Costura: la fábrica entrena y devuelve el df de predicciones.
     df_pred = factory.train(df_vec, task, label_col)
 
-    if task == "classification":
+    if task in _CLASSIFICATION_TASKS:
         pdf = df_pred.select(label_col, "probability").toPandas()
         y_true = pdf[label_col].to_numpy(dtype=int)
         # Cada valor de ``probability`` es un vector (DenseVector); a lista de floats.
@@ -199,8 +211,7 @@ def efficiency_curve(
 
     Coste: ``len(feature_order)`` entrenamientos.
     """
-    if task is None:
-        task = detect_task(df, target_col)
+    task = _normalize_task(task, df, target_col)
     factory = _resolve_model(model)
     curve: List[Tuple[int, float]] = []
     for k in range(1, len(feature_order) + 1):
@@ -252,10 +263,10 @@ def report(
     - ``efficiency_curve``: AUC/R² al añadir features en el orden ``ranking``.
 
     ``model``: nombre de backend o una ``ModelFactory`` (costura).
+    ``task``: task resuelta del Target (3 valores); ``None`` → ``"auto"``.
     Coste: ``2 + len(ranking)`` entrenamientos.
     """
-    if task is None:
-        task = detect_task(df, target_col)
+    task = _normalize_task(task, df, target_col)
     if all_features is None:
         all_features = [c for c in df.columns if c != target_col]
     factory = _resolve_model(model)

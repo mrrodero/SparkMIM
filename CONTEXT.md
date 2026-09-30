@@ -20,6 +20,10 @@ _Avoid_: index, id
 
 ### Selection
 
+**Task**:
+The kind of problem the selection serves, declared by the user: `classifier_binary` (Target with exactly two classes), `classifier_multiclass` (Target with two or more classes), or `continuous` (numeric Target). `auto` infers it from the Target's dtype and distinct values.
+_Avoid_: problem, mode
+
 **Candidate**:
 Every feature is a candidate from the start; no stage of the pipeline removes candidacy.
 _Avoid_: variable, predictor

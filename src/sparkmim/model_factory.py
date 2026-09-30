@@ -1,10 +1,10 @@
 """Fábrica de modelos: costura entre la lógica de evaluación y los backends.
 
 La lógica de evaluación (``evaluate.py``) no entrena modelos directamente:
-detecta la tarea, codifica las columnas categóricas, ensambla el vector
-``features`` y pasa el df vectorizado a una ``ModelFactory``, que entrena el
-modelo y devuelve el df de predicciones. Cada backend es un adaptador
-(docs/DESIGN.md §2, §7):
+resuelve la task declarada, codifica las columnas categóricas, ensambla el
+vector ``features`` y pasa el df vectorizado a una ``ModelFactory``, que
+entrena el modelo y devuelve el df de predicciones. Cada backend es un
+adaptador (docs/DESIGN.md §2, §7):
 
 - ``GbtFactory``: ``GradientBoostedClassifier``/``GradientBoostedRegressor``
   de spark.ml (default, sin extras).
@@ -38,9 +38,11 @@ class ModelFactory(Protocol):
     """Fábrica de modelos para la evaluación (costura, docs/DESIGN.md §2).
 
     Dado el df vectorizado (columna ``features`` y la columna label) y la
-    tarea, entrena un modelo y devuelve el df con las predicciones:
-    ``probability`` (``ArrayType(DoubleType)``, una columna por clase) en
-    clasificación y ``prediction`` (``DoubleType``) en regresión.
+    task resuelta (``"classifier_binary"`` | ``"classifier_multiclass"`` |
+    ``"continuous"``), entrena un modelo y devuelve el df con las
+    predicciones: ``probability`` (``ArrayType(DoubleType)``, una columna
+    por clase) en clasificación y ``prediction`` (``DoubleType``) en
+    continua.
 
     Coste: 1 entrenamiento por llamada.
     """
@@ -58,7 +60,7 @@ class GbtFactory:
     name = "gbt"
 
     def train(self, df_vec, task, label_col):
-        if task == "classification":
+        if task in ("classifier_binary", "classifier_multiclass"):
             from pyspark.ml.classification import GBTClassifier
 
             est = GBTClassifier(featuresCol="features", labelCol=label_col)
@@ -75,7 +77,7 @@ class XgboostFactory:
     name = "xgboost"
 
     def train(self, df_vec, task, label_col):
-        if task == "classification":
+        if task in ("classifier_binary", "classifier_multiclass"):
             from pyspark.ml.classification import XGBoostClassifier
 
             est = XGBoostClassifier(featuresCol="features", labelCol=label_col)
@@ -92,7 +94,7 @@ class LightgbmFactory:
     name = "lightgbm"
 
     def train(self, df_vec, task, label_col):
-        if task == "classification":
+        if task in ("classifier_binary", "classifier_multiclass"):
             from pyspark.ml.classification import LightGBMClassifier
 
             est = LightGBMClassifier(featuresCol="features", labelCol=label_col)

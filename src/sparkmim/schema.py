@@ -3,6 +3,11 @@
 La detección es por dtype de Spark; el usuario puede forzar el tipo con
 ``numeric_features`` / ``categorical_features`` en la config.
 
+``resolve_task`` es la regla compartida de la Task del Target: la declara el
+usuario en la config (``"auto"`` | ``"classifier_binary"`` |
+``"classifier_multiclass"`` | ``"continuous"``) y se resuelve una vez en la
+etapa 0 validando contra los datos.
+
 Los ``FeatureSpec`` se rellenan en la etapa 0 (``preprocess.py``) con el nº de
 códigos, fronteras de bins y mapas de categorías.
 """
@@ -19,6 +24,7 @@ from pyspark.sql.types import (
     ByteType,
     DateType,
     DataType,
+    DecimalType,
     DoubleType,
     FloatType,
     IntegerType,
@@ -28,7 +34,14 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-__all__ = ["FeatureSpec", "Schema", "detect_kinds", "resolve_bins", "build_schema"]
+__all__ = [
+    "FeatureSpec",
+    "Schema",
+    "detect_kinds",
+    "resolve_bins",
+    "resolve_task",
+    "build_schema",
+]
 
 _NUMERIC_TYPES = (
     ByteType,
@@ -37,6 +50,7 @@ _NUMERIC_TYPES = (
     LongType,
     FloatType,
     DoubleType,
+    DecimalType,
 )
 
 
@@ -46,6 +60,79 @@ def _is_numeric(dt: DataType) -> bool:
 
 def _is_categorical(dt: DataType) -> bool:
     return isinstance(dt, (StringType, BooleanType, DateType, TimestampType))
+
+
+# ----------------------------------------------------------------------
+# Task del Target (regla compartida; se resuelve una vez en la etapa 0).
+# ----------------------------------------------------------------------
+_TASKS = ("auto", "classifier_binary", "classifier_multiclass", "continuous")
+_CLASSIFICATION_TASKS = frozenset({"classifier_binary", "classifier_multiclass"})
+_INT_TYPES = (ByteType, ShortType, IntegerType, LongType)
+# Regla auto: entero con <= 20 valores distintos se infiere como multiclase.
+_AUTO_INT_MAX_DISTINCT = 20
+
+
+def _count_distinct(df: DataFrame, target_col: str) -> int:
+    return int(df.select(target_col).distinct().count())
+
+
+def resolve_task(df: DataFrame, target_col: str, declared: str = "auto") -> str:
+    """Resuelve la Task del Target validando la declaración contra los datos.
+
+    ``declared``: ``"auto"`` | ``"classifier_binary"`` |
+    ``"classifier_multiclass"`` | ``"continuous"``. Devuelve la tarea
+    resuelta (los 3 valores; ``"auto"`` nunca se devuelve).
+
+    - ``"auto"``: string/boolean/date/timestamp → ``classifier_multiclass``;
+      float/double/decimal → ``continuous``; entero → ``classifier_multiclass``
+      si <= 20 valores distintos (1 job de Spark), si no ``continuous``.
+    - ``"classifier_binary"``: el target debe tener exactamente 2 clases.
+    - ``"classifier_multiclass"``: el target debe tener >= 2 clases.
+    - ``"continuous"``: el target debe ser numérico.
+    """
+    target_field = next((f for f in df.schema.fields if f.name == target_col), None)
+    if target_field is None:
+        raise ValueError(
+            f"La columna target '{target_col}' no existe en el DataFrame"
+        )
+    dtype = target_field.dataType
+    if declared == "auto":
+        if _is_categorical(dtype):
+            return "classifier_multiclass"
+        if _is_numeric(dtype):
+            if isinstance(dtype, _INT_TYPES):
+                n = _count_distinct(df, target_col)
+                if n <= _AUTO_INT_MAX_DISTINCT:
+                    return "classifier_multiclass"
+                return "continuous"
+            return "continuous"
+        raise ValueError(
+            f"task='auto' no reconoce el dtype del target '{target_col}': {dtype}"
+        )
+    if declared == "classifier_binary":
+        n = _count_distinct(df, target_col)
+        if n != 2:
+            raise ValueError(
+                f"task='classifier_binary' requiere exactamente 2 clases; el "
+                f"target '{target_col}' tiene {n}"
+            )
+        return declared
+    if declared == "classifier_multiclass":
+        n = _count_distinct(df, target_col)
+        if n < 2:
+            raise ValueError(
+                f"task='classifier_multiclass' requiere al menos 2 clases; el "
+                f"target '{target_col}' tiene {n}"
+            )
+        return declared
+    if declared == "continuous":
+        if not _is_numeric(dtype):
+            raise ValueError(
+                f"task='continuous' requiere un target numérico; el target "
+                f"'{target_col}' es {dtype}"
+            )
+        return declared
+    raise ValueError(f"task inválido: {declared!r}; debe ser uno de {_TASKS}")
 
 
 @dataclass
@@ -134,10 +221,13 @@ def resolve_bins(n_rows: int, bins) -> int:
     return int(bins)
 
 
-def build_schema(df: DataFrame, config) -> Schema:
+def build_schema(df: DataFrame, config, task: str) -> Schema:
     """Construye el ``Schema`` (solo tipos) a partir del DataFrame y la config.
 
     El orden de las features es el del schema del DataFrame (sin el target).
+    El ``kind`` del target viene de la ``task`` resuelta (clasificación →
+    ``"categorical"``, continua → ``"numeric"``); el dtype del target sigue
+    validándose en ``detect_kinds``.
     """
     kinds = detect_kinds(df, config)
     features: List[FeatureSpec] = []
@@ -150,7 +240,9 @@ def build_schema(df: DataFrame, config) -> Schema:
         )
     # Target spec (tipo; el binning del target se resuelve en preprocess).
     target_field = next(f for f in df.schema.fields if f.name == config.target)
-    target_kind = "numeric" if _is_numeric(target_field.dataType) else "categorical"
+    target_kind = (
+        "categorical" if task in _CLASSIFICATION_TASKS else "numeric"
+    )
     target_spec = FeatureSpec(
         name=config.target, kind=target_kind, dtype=target_field.dataType.typeName(),
         is_target=True,

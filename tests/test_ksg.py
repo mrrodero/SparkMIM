@@ -9,6 +9,7 @@
 import numpy as np
 import pytest
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 from sparkmim import InfoSelector, JMIMSelector, ksg_cmi, ksg_mi
 from planted import Feature, Target, make_planted, to_spark_df
@@ -278,11 +279,120 @@ def test_ksg_rejects_non_numeric_feature(spark):
     assert "numéricas" in str(excinfo.value)
 
 
-def test_ksg_rejects_non_numeric_target(spark):
-    """Target string con KSG: ValueError claro nombrando la columna."""
+def test_ksg_rejects_non_numeric_target_continuous(spark):
+    """Target string declarado ``continuous`` con KSG: ValueError claro
+    nombrando la columna."""
     rows = [(1.0, "ok"), (2.0, "ok"), (3.0, "ok")]
     df = spark.createDataFrame(rows, ["x0", "y"])
     with pytest.raises(ValueError) as excinfo:
+        InfoSelector(target="y", task="continuous", estimator="ksg", ksg_k=10).fit(df)
+    assert "y" in str(excinfo.value)
+    assert "numérico" in str(excinfo.value)
+
+
+def test_ksg_auto_unsupported_target_dtype(spark):
+    """Task ``auto`` con un dtype de target no reconocido (array): ValueError
+    claro nombrando la columna."""
+    from pyspark.sql.types import (
+        ArrayType,
+        DoubleType,
+        StructField,
+        StructType,
+    )
+
+    schema = StructType(
+        [
+            StructField("x0", DoubleType()),
+            StructField("y", ArrayType(DoubleType())),
+        ]
+    )
+    df = spark.createDataFrame([(1.0, [1.0]), (2.0, [2.0])], schema)
+    with pytest.raises(ValueError) as excinfo:
         InfoSelector(target="y", estimator="ksg", ksg_k=10).fit(df)
     assert "y" in str(excinfo.value)
-    assert "numéricas" in str(excinfo.value)
+    assert "no reconoce" in str(excinfo.value)
+
+
+# --- KSG: clasificación multiclase (target entero, codificación lossless) ---
+
+
+_KSG_MC_THRESHOLDS = tuple(round(-2.0 + i * 4 / 14, 4) for i in range(14))
+
+
+def _make_df_ksg_multiclass(spark, n, seed):
+    """x0, x1 informativas; x2 independiente; y con 15 clases enteras (0..14).
+
+    ``y = sum(int(score > t) for t in thresholds)`` (ver ``planted``).
+    """
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "informative"),
+            Feature("x1", "informative"),
+            Feature("x2", "independent"),
+        ],
+        Target(kind="linear", noise=0.1, thresholds=_KSG_MC_THRESHOLDS),
+    )
+    return to_spark_df(spark, data)
+
+
+@pytest.fixture(scope="module")
+def df_ksg_multiclass(spark):
+    return _make_df_ksg_multiclass(spark, n=3000, seed=3)
+
+
+def test_ksg_multiclass_resolves_task(df_ksg_multiclass):
+    """KSG con task ``auto`` y target entero de 15 clases → multiclase."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=5,
+        screen_top_k=10,
+        seed=42,
+    ).fit(df_ksg_multiclass)
+    assert model.task == "classifier_multiclass"
+    assert "x0" in model.selected_features
+    assert "x1" in model.selected_features
+    assert "x2" not in model.selected_features
+
+
+class TrivialFactory:
+    """Adaptador trivial determinista para tests (sin entrenamiento real).
+
+    - Clasificación: ``probability`` = [0.5] * n_classes → AUC = 0.5
+      (todos los empates).
+    - Continua: ``prediction`` = media del target → R² = 0.0.
+    """
+
+    name = "trivial"
+
+    def __init__(self, n_classes: int = 2):
+        self._n_classes = n_classes
+
+    def train(self, df_vec, task, label_col):
+        if task in ("classifier_binary", "classifier_multiclass"):
+            probs = F.array(*[F.lit(0.5) for _ in range(self._n_classes)])
+            return df_vec.withColumn("probability", probs)
+        mean = df_vec.select(F.mean(label_col)).first()[0]
+        return df_vec.withColumn("prediction", F.lit(float(mean)))
+
+
+def test_ksg_multiclass_report(df_ksg_multiclass):
+    """report() tras un fit KSG multiclase: macro AUC = 0.5 (empates) y la
+    task resuelta viaja con el modelo."""
+    model = InfoSelector(
+        target="y",
+        criterion="jmim",
+        estimator="ksg",
+        ksg_k=10,
+        max_features=5,
+        screen_top_k=10,
+        seed=42,
+    ).fit(df_ksg_multiclass)
+    rep = model.report(df_ksg_multiclass, model=TrivialFactory(n_classes=15))
+    assert rep.task == "classifier_multiclass"
+    assert rep.metric_selected == pytest.approx(0.5)
+    assert rep.metric_all == pytest.approx(0.5)

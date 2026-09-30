@@ -30,9 +30,9 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   nueva interfaz `ModelFactory` con tres adaptadores (`GbtFactory`,
   `XgboostFactory`, `LightgbmFactory`); `train_and_evaluate`,
   `efficiency_curve` y `report` aceptan un nombre de backend o una
-  `ModelFactory`; el coste de entrenamiento (2 + |ranking|) y la regla de
-  detección de tarea se declaran en la interfaz; `detect_task` ahora es
-  pública.
+  `ModelFactory`; el coste de entrenamiento (2 + |ranking|) se declara en la
+  interfaz y la task llega ya resuelta (3 valores) sobre la que los
+  adaptadores ramifican.
 - **Caché con accesores orientados** (`tables.py`, `oracles.py`):
   `TableCache.cmi_table(i, j)` devuelve la triple en la orientación que
   espera `conditional_mi` (x, Y, z), sin importar el orden de (i, j); la
@@ -49,12 +49,27 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   roles de feature (informativa/independiente/redundante/correlada) y modo de
   target (`and`/`linear`/`flip`); `benchmarks/synthetic.generate` queda como
   adaptador fino sobre `planted.make_planted` (misma firma, mismos errores).
+- **Task declarada por el usuario** (`schema.py`, `config.py`,
+  `preprocess.py`, `model.py`, `selector.py`, `evaluate.py`,
+  `model_factory.py`): nueva `SelectorConfig.task` (`"auto"` |
+  `"classifier_binary"` | `"classifier_multiclass"` | `"continuous"`, campo
+  compartido de ambos modos); la task se resuelve una vez en la etapa 0 con la
+  regla compartida `schema.resolve_task` (validando contra los datos) y viaja
+  en `SelectorModel.task` hasta el `report`, que mide el Target crudo. La
+  regla `"auto"` es la antigua detección de `evaluate.detect_task`, ahora
+  eliminada de la API pública; el vocabulario legacy `"classification"` /
+  `"regression"` sigue aceptándose en `train_and_evaluate`, `efficiency_curve`
+  y `report` (mapa a `"classifier_multiclass"` / `"continuous"`). El modo KSG
+  ahora soporta clasificación: target no numérico con codificación lossless
+  por valor distinto (ADR-0002).
 
 ### Fixed
 
 - **Índices del bucle greedy (KSG):** el bucle greedy indexaba la lista de
   candidatas (longitud K) con índices globales de feature; ahora opera en
   posiciones de candidata 0..K−1.
+- **`Decimal` como numérico en el modo histograma:** ahora se acepta (unificado
+  con el modo KSG, que ya la aceptaba); antes lanzaba `TypeError`.
 
 ## [0.1.0] - 2026-09-16
 

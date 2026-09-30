@@ -11,8 +11,9 @@ Driver: cuantiles globales ponderados por ``n_part`` → fronteras de bins
 categorías por frecuencia + código "other".
 
 Pase 0b (mapeo sin shuffle): cadenas ``when`` por columna aplicando bins y
-códigos; missing → código dedicado (o drop). Target: binaria tal cual,
-multiclase → códigos, regresión → bins cuantiles (estimador de histograma).
+códigos; missing → código dedicado (o drop). Target según la Task resuelta:
+clasificación (binaria/multiclase) → un código por valor distinto, continua
+→ bins cuantiles (estimador de histograma).
 
 Se materializa ``df_prep`` (códigos enteros) con ``persist(MEMORY_AND_DISK)``.
 """
@@ -36,7 +37,7 @@ from pyspark.sql.types import (
 )
 from pyspark.storagelevel import StorageLevel
 
-from .schema import Schema, build_schema, resolve_bins
+from .schema import Schema, build_schema, resolve_bins, resolve_task
 
 __all__ = ["PreparedData", "prepare", "resolve_specs", "apply_mapping"]
 
@@ -65,6 +66,7 @@ class PreparedData:
     df_prep: DataFrame
     schema: Schema
     n_rows: int
+    task: str
 
 
 def _cat_to_str(value, dtype: str) -> str:
@@ -325,7 +327,10 @@ def prepare(df: DataFrame, config) -> PreparedData:
             "prepare() es para el modo 'histogram'; el modo 'ksg' tiene su "
             "propio camino (ver sparkmim.info.ksg)"
         )
-    schema = build_schema(df, config)
+    # La Task se resuelve una vez aquí (regla compartida, schema.resolve_task)
+    # y se lleva en el PreparedData y en el SelectorModel.
+    task = resolve_task(df, config.target, config.task)
+    schema = build_schema(df, config, task)
     # count() para resolver bins="auto" antes del pase 0a (sobre el df original).
     n_total = df.count()
     stats_df = _stats_pass(df, schema, config, n_total)
@@ -336,4 +341,4 @@ def prepare(df: DataFrame, config) -> PreparedData:
     # n_rows refleja las filas tras el drop (si missing="drop"); con
     # "category" coincide con n_total.
     n_rows = df_prep.count()
-    return PreparedData(df_prep=df_prep, schema=schema, n_rows=n_rows)
+    return PreparedData(df_prep=df_prep, schema=schema, n_rows=n_rows, task=task)

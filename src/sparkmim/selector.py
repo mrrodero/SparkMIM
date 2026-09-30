@@ -21,19 +21,24 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
+    BooleanType,
     ByteType,
+    DateType,
     DecimalType,
     DoubleType,
     FloatType,
     IntegerType,
     LongType,
     ShortType,
+    StringType,
+    TimestampType,
 )
 
 from .config import SelectorConfig
 from .criteria import CRITERIA
 from .info.ksg import ksg_mi
 from .model import SelectorModel
+from .schema import resolve_task
 from .oracles import HistogramOracle, KsgOracle
 from .preprocess import prepare
 from .screen import screen
@@ -53,7 +58,7 @@ __all__ = [
     "MIMSelector",
 ]
 
-# Tipos numéricos que el modo KSG acepta (features y target).
+# Tipos numéricos que el modo KSG acepta como features.
 _KSG_NUMERIC_TYPES = (
     ByteType,
     ShortType,
@@ -62,6 +67,14 @@ _KSG_NUMERIC_TYPES = (
     FloatType,
     DoubleType,
     DecimalType,
+)
+# Tipos que el modo KSG acepta como target: numéricos (toda Task) o
+# categóricos (solo Task de clasificación; se codifican por valor distinto).
+_KSG_TARGET_TYPES = _KSG_NUMERIC_TYPES + (
+    StringType,
+    BooleanType,
+    DateType,
+    TimestampType,
 )
 
 
@@ -128,6 +141,7 @@ class InfoSelector:
                 criterion=self.criterion,
                 n_rows=n_rows,
                 target=target_col,
+                task=prepared.task,
                 timings_=timings,
             )
 
@@ -179,6 +193,7 @@ class InfoSelector:
             criterion=self.criterion,
             n_rows=n_rows,
             target=target_col,
+            task=prepared.task,
         )
         timings["etapa3"] = time.perf_counter() - t
         timings["total"] = time.perf_counter() - t0
@@ -205,22 +220,39 @@ class InfoSelector:
         Etapa 1: MI por KSG (driver, población completa). Etapa 3: greedy
         detrás de ``KsgOracle`` (posiciones de candidata).
 
-        Las features y el target deben ser numéricos: si no, error claro aquí
-        (no un crash profundo en ``to_numpy(dtype=float)``).
+        La Task se resuelve una vez aquí (regla compartida,
+        ``schema.resolve_task``) y se lleva en el ``SelectorModel``. Las
+        features deben ser numéricas; el target debe ser numérico si la Task
+        es continua, y numérico o categórico si es de clasificación (los
+        valores distintos se codifican sin pérdida). Errores claros aquí, no
+        crashes profundos.
         """
         target_col = config.target
+        task = resolve_task(df, target_col, config.task)
         feature_cols = [c for c in df.columns if c != target_col]
-        bad_cols = [
+        bad_feature_cols = [
             c
-            for c in feature_cols + [target_col]
+            for c in feature_cols
             if not isinstance(df.schema[c].dataType, _KSG_NUMERIC_TYPES)
         ]
-        if bad_cols:
+        if bad_feature_cols:
             raise ValueError(
-                "el modo 'ksg' requiere columnas numéricas (features y target); "
-                f"no numéricas: "
-                f"{[(c, df.schema[c].dataType.typeName()) for c in bad_cols]}"
+                "el modo 'ksg' requiere features numéricas; no numéricas: "
+                f"{[(c, df.schema[c].dataType.typeName()) for c in bad_feature_cols]}"
             )
+        target_dtype = df.schema[target_col].dataType
+        if task == "continuous":
+            if not isinstance(target_dtype, _KSG_NUMERIC_TYPES):
+                raise ValueError(
+                    "el modo 'ksg' con task='continuous' requiere un target "
+                    f"numérico; el target '{target_col}' es {target_dtype}"
+                )
+        else:
+            if not isinstance(target_dtype, _KSG_TARGET_TYPES):
+                raise ValueError(
+                    f"el modo 'ksg' con task={task!r} no soporta el dtype del "
+                    f"target '{target_col}': {target_dtype}"
+                )
         n_total = int(df.count())
         if n_total <= config.ksg_subsample:
             df_sub = df
@@ -228,10 +260,14 @@ class InfoSelector:
             fraction = config.ksg_subsample / n_total
             df_sub = df.sample(withReplacement=False, fraction=fraction, seed=config.seed)
 
-        # Al driver como pandas → numpy (variables continuas).
+        # Al driver como pandas → numpy.
         pdf = df_sub.toPandas()
         X = pdf[feature_cols].to_numpy(dtype=float)  # n_sub × N
-        y = pdf[target_col].to_numpy(dtype=float)    # n_sub
+        if task == "continuous":
+            y = pdf[target_col].to_numpy(dtype=float)  # n_sub
+        else:
+            # Clasificación: códigos sin pérdida (un entero por valor distinto).
+            _, y = np.unique(pdf[target_col].to_numpy(), return_inverse=True)
         N = X.shape[1]
         if N == 0:
             return SelectorModel(
@@ -241,6 +277,7 @@ class InfoSelector:
                 criterion=self.criterion,
                 n_rows=n_total,
                 target=target_col,
+                task=task,
             )
 
         # Etapa 1: MI por KSG para cada feature (población completa).
@@ -276,6 +313,7 @@ class InfoSelector:
             criterion=self.criterion,
             n_rows=n_total,
             target=target_col,
+            task=task,
         )
 
 
