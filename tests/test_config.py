@@ -37,6 +37,24 @@ def test_default_configs_build():
     SelectorConfig(target="y", estimator="ksg")
 
 
+def test_task_default_auto():
+    """La task declarada por defecto es ``"auto"``."""
+    assert SelectorConfig(target="y").task == "auto"
+
+
+def test_task_accepted_in_both_modes():
+    """``task`` es campo compartido: los 4 valores aceptados en ambos modos."""
+    for task in ("auto", "classifier_binary", "classifier_multiclass", "continuous"):
+        SelectorConfig(target="y", task=task)
+        SelectorConfig(target="y", task=task, estimator="ksg")
+
+
+def test_invalid_task_rejected():
+    """Valor de task fuera del vocabulario → ValueError (también el legacy)."""
+    with pytest.raises(ValueError, match="task debe ser"):
+        SelectorConfig(target="y", task="classification")
+
+
 @pytest.mark.parametrize(
     ("kwargs", "field"),
     [

@@ -1,11 +1,14 @@
 """Tests de evaluación (Hito 6): métricas + costura ``ModelFactory``.
 
-- Unitarios: ``auc_binary``, ``auc_macro``, ``r2_score``, ``detect_task`` y
+- Unitarios: ``auc_binary``, ``auc_macro``, ``r2_score`` y
   ``make_model_factory``.
 - Costura: ``TrivialFactory`` (adaptador trivial determinista, sin Spark ML)
   ejercita el cableado de la evaluación: clasificación AUC = 0.5 (empates),
-  multiclase macro = 0.5 y regresión R² = 0.0 (la ruta de regresión, antes
+  multiclase macro = 0.5 y continua R² = 0.0 (la ruta de continua, antes
   sin test).
+- Task: ``task=None`` → ``"auto"``; el vocabulario legacy
+  (``"classification"`` / ``"regression"``) sigue aceptándose; task inválida
+  → ValueError.
 - E2E: ``report()`` con GBT en df sintético — AUC(seleccionadas) ≥
   AUC(todas) − ε; curva de eficiencia no decreciente.
 """
@@ -22,7 +25,6 @@ from sparkmim import (
     XgboostFactory,
     auc_binary,
     auc_macro,
-    detect_task,
     efficiency_curve,
     make_model_factory,
     r2_score,
@@ -93,7 +95,7 @@ def test_r2_score_mean_prediction():
     assert r2_score(y_true, y_pred) == pytest.approx(0.0)
 
 
-# --- Unitarios: fábrica de modelos y detección de tarea ---
+# --- Unitarios: fábrica de modelos ---
 
 
 def test_make_model_factory_names():
@@ -112,28 +114,6 @@ def test_make_model_factory_bogus():
         make_model_factory("bogus")
 
 
-def test_detect_task_string(spark):
-    df = spark.createDataFrame([("a",), ("b",), ("a",)], ["y"])
-    assert detect_task(df, "y") == "classification"
-
-
-def test_detect_task_double(spark):
-    df = spark.createDataFrame([(1.0,), (2.0,), (3.0,)], ["y"])
-    assert detect_task(df, "y") == "regression"
-
-
-def test_detect_task_int_few_classes(spark):
-    # Entero con ≤ 20 valores distintos → clasificación.
-    df = spark.createDataFrame([(1,), (2,), (3,)], ["y"])
-    assert detect_task(df, "y") == "classification"
-
-
-def test_detect_task_int_many_classes(spark):
-    # Entero con > 20 valores distintos → regresión.
-    df = spark.createDataFrame([(i,) for i in range(25)], ["y"])
-    assert detect_task(df, "y") == "regression"
-
-
 # --- Costura: adaptador trivial determinista (sin Spark ML) ---
 
 
@@ -143,7 +123,7 @@ class TrivialFactory:
     - Clasificación: ``probability`` = [0.5] * n_classes → AUC = 0.5
       (todos los empates; ``n_classes`` debe coincidir con el nº de clases
       porque ``auc_macro`` indexa la matriz por clase).
-    - Regresión: ``prediction`` = media del target → R² = 0.0.
+    - Continua: ``prediction`` = media del target → R² = 0.0.
     """
 
     name = "trivial"
@@ -152,7 +132,7 @@ class TrivialFactory:
         self._n_classes = n_classes
 
     def train(self, df_vec, task, label_col):
-        if task == "classification":
+        if task in ("classifier_binary", "classifier_multiclass"):
             probs = F.array(*[F.lit(0.5) for _ in range(self._n_classes)])
             return df_vec.withColumn("probability", probs)
         mean = df_vec.select(F.mean(label_col)).first()[0]
@@ -229,9 +209,48 @@ def test_train_and_evaluate_trivial_multiclass(df_multiclass):
 
 
 def test_train_and_evaluate_trivial_regression(df_reg):
-    # Ruta de regresión (antes sin test): predicción = media → R² = 0.0.
+    # Ruta de continua (antes sin test): predicción = media → R² = 0.0.
     metric = train_and_evaluate(df_reg, ["x0", "x1"], "y", TrivialFactory())
     assert metric == pytest.approx(0.0)
+
+
+# --- Task: resolución, vocabulario legacy e inválida ---
+
+
+def test_train_and_evaluate_task_auto_binary(df):
+    # task=None → "auto": target entero 2 clases → classifier_binary.
+    metric = train_and_evaluate(df, ["x0", "x1"], "y", TrivialFactory())
+    assert metric == pytest.approx(0.5)
+
+
+def test_train_and_evaluate_task_explicit_binary(df):
+    # Task explícita binaria: misma ruta de AUC.
+    metric = train_and_evaluate(
+        df, ["x0", "x1"], "y", TrivialFactory(), task="classifier_binary"
+    )
+    assert metric == pytest.approx(0.5)
+
+
+def test_train_and_evaluate_legacy_classification(df):
+    # Vocabulario legacy: "classification" → classifier_multiclass.
+    metric = train_and_evaluate(
+        df, ["x0", "x1"], "y", TrivialFactory(), task="classification"
+    )
+    assert metric == pytest.approx(0.5)
+
+
+def test_train_and_evaluate_legacy_regression(df_reg):
+    # Vocabulario legacy: "regression" → continuous.
+    metric = train_and_evaluate(
+        df_reg, ["x0", "x1"], "y", TrivialFactory(), task="regression"
+    )
+    assert metric == pytest.approx(0.0)
+
+
+def test_train_and_evaluate_task_invalid(df):
+    # Task inválida → ValueError (regla compartida).
+    with pytest.raises(ValueError, match="task inválido"):
+        train_and_evaluate(df, ["x0"], "y", TrivialFactory(), task="bogus")
 
 
 def test_efficiency_curve_trivial_classification(df):
@@ -258,7 +277,7 @@ def test_report_trivial_classification(df):
         model=TrivialFactory(),
     )
     assert rep.model_name == "trivial"
-    assert rep.task == "classification"
+    assert rep.task == "classifier_multiclass"
     assert rep.metric_selected == pytest.approx(0.5)
     assert rep.metric_all == pytest.approx(0.5)
     assert len(rep.efficiency_curve) == 3
@@ -275,7 +294,7 @@ def test_report_trivial_regression(df_reg):
         model=TrivialFactory(),
     )
     assert rep.model_name == "trivial"
-    assert rep.task == "regression"
+    assert rep.task == "continuous"
     assert rep.metric_selected == pytest.approx(0.0)
     assert rep.metric_all == pytest.approx(0.0)
     assert all(m == pytest.approx(0.0) for _, m in rep.efficiency_curve)
@@ -302,9 +321,9 @@ def test_report_gbt(df):
     assert len(curve) == len(model.ranking_)
     for (k1, m1), (k2, m2) in zip(curve, curve[1:]):
         assert m2 >= m1 - 0.02, f"curva decreciente en k={k2}: {m2} < {m1}"
-    # El modelo y la tarea son correctos.
+    # El modelo y la task son correctos.
     assert rep.model_name == "gbt"
-    assert rep.task == "classification"
+    assert rep.task == "classifier_multiclass"
 
 
 def test_report_invalid_model(df):

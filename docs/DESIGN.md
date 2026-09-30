@@ -35,8 +35,12 @@ tablas de contingencia en **pases únicos**.
    frecuencia + código "other" (tablas acotadas; sesgo documentado).
 4. **Pase 0b (mapeo, sin shuffle):** expresiones `when`/`map` por columna
    aplicando bins y códigos; missing → código dedicado (o drop).
-5. **Target:** clasificación (etiquetas discretas) o regresión (binning
-   cuantil `b_y=10`).
+5. **Task del Target:** declarada por el usuario en `SelectorConfig.task`
+   (`"auto"` | `"classifier_binary"` | `"classifier_multiclass"` |
+   `"continuous"`), resuelta una vez con la regla compartida
+   `schema.resolve_task` validando contra los datos y llevada en
+   `SelectorModel.task` (ADR-0002). Representación: clasificación → un código
+   por valor distinto (sin truncar); continua → binning cuantil `b_y=10`.
 
 ### Etapa 1 — Screening univariante (1 pase)
 
@@ -166,7 +170,9 @@ a 0.
 
 > **Trade-off:** el estimador KSG submuestrea ≤ `ksg_subsample` (250k) filas
 > al driver y calcula MI/CMI por kNN allí. Es la única ruta con kNN global en
-> driver; adecuada para n moderado, no para 10⁷.
+> driver; adecuada para n moderado, no para 10⁷. Para clasificación, el
+> target se codifica lossless por valor distinto y se trata como variable
+> numérica en el kNN (no requiere binning).
 
 ---
 
@@ -271,10 +277,11 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   FDR vive dentro de cada adaptador.
 - **Evaluación detrás de una costura:** la interfaz `ModelFactory`
   (`model_factory.py`) con tres adaptadores (GBT, XGBoost, LightGBM); la
-  lógica de evaluación (`evaluate.py`) compone detección de tarea →
-  codificación → ensamblaje → predicción → métrica y acepta un nombre de
-  backend o una fábrica; el coste (2 + |ranking| entrenamientos) y la regla
-  de detección de tarea se declaran en la interfaz.
+  lógica de evaluación (`evaluate.py`) compone codificación → ensamblaje →
+  predicción → métrica y acepta un nombre de backend o una fábrica; la task
+  llega ya resuelta (3 valores; el vocabulario legacy `"classification"` /
+  `"regression"` se acepta como alias) y el coste (2 + |ranking|
+  entrenamientos) se declara en la interfaz.
 - **Caché con accesores orientados:** `TableCache.cmi_table(i, j)`
   (`tables.py`) devuelve la triple en la orientación que esperan las
   funciones de entropía (x, Y, z), sin importar el orden de (i, j); la
@@ -285,6 +292,13 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   modo distinto de su valor por defecto lanza `ValueError` en la
   construcción, y el modo KSG exige columnas numéricas con error claro en
   `fit` (no un crash profundo en `to_numpy`).
+- **Task declarada por el usuario (ADR-0002):** `SelectorConfig.task`
+  (`"auto"` | `"classifier_binary"` | `"classifier_multiclass"` |
+  `"continuous"`, campo compartido de ambos modos) se resuelve una vez en la
+  etapa 0 con la regla compartida `schema.resolve_task` (validando contra los
+  datos) y viaja en `SelectorModel.task` hasta el `report`, que mide el
+  Target crudo; el modo KSG soporta clasificación con codificación lossless
+  del target por valor distinto.
 - **Generador de estructura plantada compartido:** `tests/planted.py`
   define la estructura plantada una sola vez (roles de feature:
   informativa/independiente/redundante/correlada; modos de target: `and`,
@@ -303,5 +317,4 @@ greedy ~segundos. **End-to-end < 15 min** (validada por el benchmark).
   ronda (aproximación documentada).
 - **KSG:** solo para n moderado (subsample ≤ 250k al driver).
 - **Multiclase:** la MI se calcula sobre el target (etiquetas discretas); no
-  hay tratamiento especial de desbalance (el binning cuantil y el FDR
-  mitigan).
+  hay tratamiento especial de desbalance (el filtro FDR mitiga).

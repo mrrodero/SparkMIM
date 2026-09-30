@@ -7,6 +7,8 @@ from typing import List, Optional, Union
 
 from pyspark.sql import SparkSession
 
+from .schema import _TASKS
+
 __all__ = ["SelectorConfig"]
 
 _MISSING_MODES = ("category", "drop")
@@ -37,6 +39,7 @@ _HISTOGRAM_ONLY_FIELDS = frozenset(
 _SHARED_FIELDS = frozenset(
     {
         "target",
+        "task",
         "max_features",
         "screen_top_k",
         "min_score",
@@ -55,6 +58,10 @@ class SelectorConfig:
 
     Campos (valores por defecto del plan):
     - ``target``: nombre de la columna objetivo.
+    - ``task``: Task del Target declarada por el usuario: ``"auto"`` (default),
+      ``"classifier_binary"``, ``"classifier_multiclass"`` o ``"continuous"``.
+      Se resuelve una vez en la etapa 0 validando contra los datos
+      (``schema.resolve_task``).
     - ``max_features``: nº de features a seleccionar.
     - ``screen_top_k``: candidatas conservadas tras el screening (etapa 1).
     - ``bins``: bins para continuas (int) o ``"auto"`` = clamp(round(log2 n), 4, 20).
@@ -83,15 +90,17 @@ class SelectorConfig:
       ``missing``, ``significance``, ``fdr_q``, ``n_permutations``,
       ``permutation_rows``, ``subsample``, ``max_cache_cells`` y los overrides
       de esquema (``numeric_features`` / ``categorical_features``).
-    - ``"ksg"``: ``ksg_k`` y ``ksg_subsample``; las features y el target deben
-      ser numéricos (error claro en ``fit``).
-    - Compartidos: ``target``, ``max_features``, ``screen_top_k``, ``min_score``,
-      ``seed``, ``cmim_m``, ``cmim_approx``, ``spark``.
+    - ``"ksg"``: ``ksg_k`` y ``ksg_subsample``; las features deben ser
+      numéricas y el target numérico si ``task`` es continua (error claro en
+      ``fit``).
+    - Compartidos: ``target``, ``task``, ``max_features``, ``screen_top_k``,
+      ``min_score``, ``seed``, ``cmim_m``, ``cmim_approx``, ``spark``.
     Un campo del otro modo distinto de su valor por defecto lanza ``ValueError``
     en la construcción.
     """
 
     target: str
+    task: str = "auto"
     max_features: int = 50
     screen_top_k: int = 100
     bins: Union[int, str] = 10
@@ -149,6 +158,8 @@ class SelectorConfig:
             raise ValueError("subsample debe ser >= 1000")
         if self.estimator not in _ESTIMATORS:
             raise ValueError(f"estimator debe ser uno de {_ESTIMATORS}")
+        if self.task not in _TASKS:
+            raise ValueError(f"task debe ser uno de {_TASKS}")
         self._validate_mode()
         if self.ksg_k < 1:
             raise ValueError("ksg_k debe ser >= 1")
