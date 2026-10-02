@@ -15,7 +15,7 @@ import pytest
 from pyspark.sql import SparkSession
 
 from sparkmim.config import SelectorConfig
-from sparkmim.info.entropy import conditional_mi, conditional_mi_multi
+from sparkmim.info.entropy import conditional_mi
 from sparkmim.info.ksg import ksg_cmi
 from sparkmim.oracles import HistogramOracle, KsgOracle
 from sparkmim.preprocess import prepare
@@ -267,7 +267,7 @@ def eq_df(spark):
 def test_histogram_oracle_cmi_set_matches_conditional_mi(eq_df):
     """El pase CMIM del oráculo (mapInPandas) da los mismos valores que el
     cálculo directo sobre los mismos conteos: ``conditional_mi`` sobre la
-    triple del caché (1 condicionante) y ``conditional_mi_multi`` sobre la
+    triple del caché (1 condicionante) y ``conditional_mi`` sobre la
     conjunta 4-vía reconstruida en numpy (2 condicionantes)."""
     config = SelectorConfig(
         target="y", screen_top_k=4, max_features=4, subsample=2000, seed=42,
@@ -337,5 +337,5 @@ def test_histogram_oracle_cmi_set_matches_conditional_mi(eq_df):
             ).reshape(
                 candidate_n_codes[i], n_y, candidate_n_codes[c0], candidate_n_codes[c1]
             )
-            expected = conditional_mi_multi(t4)
+            expected = conditional_mi(t4)
         assert out[i] == pytest.approx(expected, abs=1e-9)

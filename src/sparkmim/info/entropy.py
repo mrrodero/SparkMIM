@@ -18,7 +18,6 @@ __all__ = [
     "joint_entropy_from_counts",
     "mutual_information",
     "conditional_mi",
-    "conditional_mi_multi",
 ]
 
 
@@ -61,11 +60,53 @@ def joint_entropy_from_counts(table: np.ndarray) -> float:
     return entropy_from_counts(table)
 
 
+def conditional_mi(table: np.ndarray) -> float:
+    """CMI ``CMI(X;Y|Z1,...,Zk) = Σ p(x,y,z) log [p(x,y,z)p(z) / (p(x,z)p(y,z))]``.
+
+    Una sola fórmula para todos los grados de condicionamiento: la tabla tiene
+    ejes ``(X, Y, Z1, ..., Zk)`` con ``dim ≥ 2``.
+
+    - ``dim == 2`` (``k = 0``, condicionante vacío): ``p(z) = 1`` y los
+      marginales ``p(x,z)``/``p(y,z)`` coinciden con la tabla; la fórmula se
+      reduce exactamente a ``MI(X;Y)``.
+    - ``dim == 3`` (``k = 1``): ``CMI(X;Y|Z)``.
+    - ``dim ≥ 4`` (``k ≥ 2``): varios condicionantes.
+
+    Args:
+        table: tabla de conteos conjunta con ejes ``(X, Y, Z1, ..., Zk)``,
+            ``dim ≥ 2``.
+
+    Returns:
+        CMI en nats (≥ 0 salvo error numérico).
+    """
+    table = np.asarray(table, dtype=np.float64)
+    if table.ndim < 2:
+        raise ValueError(f"table debe tener ≥ 2 dims, tiene {table.ndim}")
+    n = table.sum()
+    if n == 0:
+        return 0.0
+    p = table / n
+    pz = p.sum(axis=(0, 1))   # (Z1, ..., Zk); escalar 1.0 con k = 0
+    pxz = p.sum(axis=1)       # (X, Z1, ..., Zk)
+    pyz = p.sum(axis=0)       # (Y, Z1, ..., Zk)
+    # Broadcasting: pz gana 2 ejes al frente (X, Y); pxz gana 1 eje tras X;
+    # pyz gana 1 eje al frente (X). Con k = 0, pz es el escalar 1.0 y
+    # pxz/pyz son la propia tabla: idéntico a MI(X;Y).
+    terms = p * (
+        _log_nonzero(p)
+        + _log_nonzero(pz)[None, None]
+        - _log_nonzero(pxz)[:, None]
+        - _log_nonzero(pyz)[None, :]
+    )
+    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
+
+
 def mutual_information(table_xy: np.ndarray) -> float:
     """Información mutua ``MI(X;Y) = Σ p(x,y) log [p(x,y) / (p(x)p(y))]``.
 
-    Equivalente a ``H(X) + H(Y) - H(X,Y)``; se calcula directamente de la
-    tabla conjunta por estabilidad numérica.
+    Alias 2D de :func:`conditional_mi` (condicionante vacío). Equivalente a
+    ``H(X) + H(Y) - H(X,Y)``; se calcula directamente de la tabla conjunta
+    por estabilidad numérica.
 
     Args:
         table_xy: tabla de conteos conjunta (n_x, n_y).
@@ -76,70 +117,4 @@ def mutual_information(table_xy: np.ndarray) -> float:
     table_xy = np.asarray(table_xy, dtype=np.float64)
     if table_xy.ndim != 2:
         raise ValueError(f"table_xy debe ser 2D, tiene {table_xy.ndim} dims")
-    n = table_xy.sum()
-    if n == 0:
-        return 0.0
-    pxy = table_xy / n
-    px = pxy.sum(axis=1)
-    py = pxy.sum(axis=0)
-    terms = pxy * (_log_nonzero(pxy) - _log_nonzero(px)[:, None] - _log_nonzero(py)[None, :])
-    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
-
-
-def conditional_mi(table_xyz: np.ndarray) -> float:
-    """CMI ``CMI(X;Y|Z) = Σ p(x,y,z) log [p(x,y,z)p(z) / (p(x,z)p(y,z))]``.
-
-    Args:
-        table_xyz: tabla de conteos conjunta (n_x, n_y, n_z).
-
-    Returns:
-        CMI en nats (≥ 0 salvo error numérico).
-    """
-    table_xyz = np.asarray(table_xyz, dtype=np.float64)
-    if table_xyz.ndim != 3:
-        raise ValueError(f"table_xyz debe ser 3D, tiene {table_xyz.ndim} dims")
-    n = table_xyz.sum()
-    if n == 0:
-        return 0.0
-    pxyz = table_xyz / n
-    pz = pxyz.sum(axis=(0, 1))
-    pxz = pxyz.sum(axis=1)
-    pyz = pxyz.sum(axis=0)
-    terms = pxyz * (
-        _log_nonzero(pxyz)
-        + _log_nonzero(pz)[None, None, :]
-        - _log_nonzero(pxz)[:, None, :]
-        - _log_nonzero(pyz)[None, :, :]
-    )
-    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
-
-
-def conditional_mi_multi(table: np.ndarray) -> float:
-    """CMI con varios condicionantes: ``CMI(X;Y|Z1,...,Zk)``.
-
-    Args:
-        table: tabla de conteos con ejes ``(X, Y, Z1, ..., Zk)`` (dim ≥ 3).
-            Para ``k=1`` es equivalente a :func:`conditional_mi`.
-
-    Returns:
-        CMI en nats (≥ 0 salvo error numérico).
-    """
-    table = np.asarray(table, dtype=np.float64)
-    if table.ndim < 3:
-        raise ValueError(f"table debe tener ≥ 3 dims, tiene {table.ndim}")
-    n = table.sum()
-    if n == 0:
-        return 0.0
-    p = table / n
-    pz = p.sum(axis=(0, 1))   # (Z1, ..., Zk)
-    pxz = p.sum(axis=1)       # (X, Z1, ..., Zk)
-    pyz = p.sum(axis=0)       # (Y, Z1, ..., Zk)
-    # Broadcasting: pz gana 2 ejes al frente (X, Y); pxz gana 1 eje tras X;
-    # pyz gana 1 eje al frente (X). Idéntico al caso 3D (k=1).
-    terms = p * (
-        _log_nonzero(p)
-        + _log_nonzero(pz)[None, None]
-        - _log_nonzero(pxz)[:, None]
-        - _log_nonzero(pyz)[None, :]
-    )
-    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
+    return conditional_mi(table_xy)

@@ -92,10 +92,10 @@ Bucle greedy único (`selection.greedy_select`) detrás de la costura
 preprocess.py   esquema + preprocesado (etapa 0)
 screen.py       screening univariante (etapa 1)
 significance.py costura SignificanceTest + adaptadores (etapa 1)
-tables.py       tablas conjuntas + TableCache (etapa 2, accesores orientados)
+tables.py       joint_counts (núcleo de conteo) + tablas + TableCache (etapa 2, accesores orientados)
 oracles.py      InformationOracle + adaptadores (costura, etapa 3)
 selection.py    bucle greedy único (etapa 3, driver)
-criteria.py     fórmulas de criterios + pase CMIM (mapInPandas)
+criteria.py     fórmulas de criterios (puras sobre el oráculo)
 info/ksg.py     estimador KSG (MI/CMI por kNN)
 info/entropy.py MI/CMI sobre tablas discretas
 selector.py     orquestación de las etapas 0-3

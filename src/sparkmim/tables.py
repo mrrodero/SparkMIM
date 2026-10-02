@@ -1,6 +1,10 @@
 """Builders de tablas de conteo en pase único (``mapInPandas``) + caché en driver.
 
 Diseño (ver docs/DESIGN.md §2):
+- **Núcleo de conteo:** ``joint_counts(cols, sizes)`` — pack→bincount→reshape
+  una sola vez; las tres pasadas de conteo (screening, triples, CMIM) son
+  adaptadores delgados sobre él y la forma de cada tabla es ``tuple(sizes)``
+  en el orden de ``cols``.
 - **Etapa 1 (screening):** UN ``mapInPandas`` sobre ``df_prep`` emite las celdas
   no nulas de ``crosstab(X_i, Y)`` por feature → un único ``groupBy`` → tablas
   densas (n_x, n_y) en el driver.
@@ -10,6 +14,9 @@ Diseño (ver docs/DESIGN.md §2):
   driver → ``TableCache``. Las tablas **par** (X_i, X_j) se derivan en el
   driver como marginal sobre Y de la triple (evita duplicar el cómputo en el
   pase; mismo resultado que calcularlas aparte).
+- **Etapa 3 (CMIM, por ronda):** UN ``mapInPandas`` sobre el subsample emite,
+  por candidata, la conjunta ``(X_i, Y, S_m \ {i})`` → se suma en el driver →
+  ``cmim_scores``.
 
 Regla de diseño: nada de tamaño O(n) cruza al driver; todo lo que llega es
 agregado y acotado por ``max_cache_cells``.
@@ -17,7 +24,7 @@ agregado y acotado por ``max_cache_cells``.
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,7 +38,11 @@ from pyspark.sql.types import (
     StructType,
 )
 
+from .info.entropy import conditional_mi
+
 __all__ = [
+    "joint_counts",
+    "cmim_scores",
     "TableCache",
     "build_screening_tables",
     "build_joint_tables",
@@ -57,6 +68,37 @@ JointSchema = StructType(
     ]
 )
 
+_CMIM_SCHEMA = StructType(
+    [
+        StructField("fid", IntegerType()),
+        StructField("table", BinaryType()),
+    ]
+)
+
+
+def joint_counts(
+    cols: Sequence[np.ndarray],
+    sizes: Sequence[int],
+) -> np.ndarray:
+    """Tabla densa de conteos conjunta de ``cols``, en el orden dado.
+
+    Núcleo pack→bincount→reshape: empaqueta cada fila en un índice plano
+    recorriendo las columnas en orden y cuenta. La forma resultante es
+    ``tuple(sizes)`` en el mismo orden que ``cols``; las pasadas de conteo la
+    usan tal cual (2, 3 o 4 columnas).
+
+    Args:
+        cols: arrays de códigos (misma longitud).
+        sizes: nº de códigos por columna (misma longitud que ``cols``).
+
+    Returns:
+        Tabla de conteos densa (int64) con forma ``tuple(sizes)``.
+    """
+    packed = np.zeros(len(cols[0]), dtype=np.int64)
+    for c, n in zip(cols, sizes):
+        packed = packed * n + c
+    return np.bincount(packed, minlength=int(np.prod(sizes))).reshape(tuple(sizes))
+
 
 def _screening_partition(
     pdf,
@@ -69,7 +111,7 @@ def _screening_partition(
     y = pdf[target_col].to_numpy().astype(np.int64)
     for fid, col in enumerate(feature_cols):
         x = pdf[col].to_numpy().astype(np.int64)
-        counts = np.bincount(x * n_y + y, minlength=n_x[fid] * n_y).reshape(n_x[fid], n_y)
+        counts = joint_counts([x, y], (n_x[fid], n_y))
         for a, b in zip(*np.nonzero(counts)):
             yield (fid, int(a), int(b), int(counts[a, b]))
 
@@ -87,10 +129,35 @@ def _joint_partition(
     xs = [pdf[col].to_numpy().astype(np.int64) for col in candidate_cols]
     for i in range(k):
         for j in range(i + 1, k):
-            ni, nj = n_codes[i], n_codes[j]
-            packed = (xs[i] * nj + xs[j]) * n_y + y
-            counts = np.bincount(packed, minlength=ni * nj * n_y).reshape(ni, nj, n_y)
+            counts = joint_counts([xs[i], xs[j], y], (n_codes[i], n_codes[j], n_y))
             yield (i, j, counts.tobytes())
+
+
+def _cmim_partition(
+    pdf: pd.DataFrame,
+    candidate_cols: Sequence[str],
+    target_col: str,
+    n_codes: Sequence[int],
+    n_y: int,
+    s_m: Sequence[int],
+):
+    """Emite, por candidata ``i``, la conjunta ``(X_i, Y, S_m \\ {i})`` densa.
+
+    El conjunto de condicionamiento efectivo es ``S_m`` menos ``i`` (evita
+    condicionar en la propia candidata). La forma sale del orden de las
+    columnas: ``(n_i, n_y) + tuple(n_codes[c] for c in cond)`` — con ``cond``
+    vacío es la tabla univariante ``(n_i, n_y)``.
+    """
+    y = pdf[target_col].to_numpy().astype(np.int64)
+    k = len(candidate_cols)
+    xs = [pdf[col].to_numpy().astype(np.int64) for col in candidate_cols]
+    for i in range(k):
+        cond = [s for s in s_m if s != i]
+        counts = joint_counts(
+            [xs[i], y] + [xs[c] for c in cond],
+            (n_codes[i], n_y) + tuple(n_codes[c] for c in cond),
+        )
+        yield (i, counts.tobytes())
 
 
 def build_screening_tables(
@@ -153,6 +220,61 @@ def build_joint_tables(
             yield out.astype({"fid_i": "int64", "fid_j": "int64", "table": "object"})
 
     return df.mapInPandas(_func, schema=JointSchema)
+
+
+def cmim_scores(
+    df: DataFrame,
+    candidate_cols: Sequence[str],
+    target_col: str,
+    n_codes: Sequence[int],
+    n_y: int,
+    s_m: Sequence[int],
+) -> np.ndarray:
+    """CMI(X_i; Y | S_m \\ {i}) para todas las candidatas ``i`` (UN pase).
+
+    Args:
+        df: DataFrame con códigos enteros (features + target), ya subsampleado.
+        candidate_cols: nombres de las columnas de candidatas (en orden).
+        target_col: nombre de la columna target.
+        n_codes: nº de códigos por candidata (misma longitud que ``candidate_cols``).
+        n_y: nº de códigos del target.
+        s_m: índices (0..K-1) del conjunto de condicionamiento ``S_m`` (m ≤ 2).
+
+    Returns:
+        Array ``CMI(X_i; Y | S_m \\ {i})`` por candidata (longitud K).
+    """
+    k = len(candidate_cols)
+
+    def _func(iterator):
+        for pdf in iterator:
+            rows = list(
+                _cmim_partition(pdf, candidate_cols, target_col, n_codes, n_y, s_m)
+            )
+            out = pd.DataFrame(rows, columns=["fid", "table"])
+            yield out.astype({"fid": "int64", "table": "object"})
+
+    rows_df = df.mapInPandas(_func, schema=_CMIM_SCHEMA)
+
+    # Suma las tablas por candidata en el driver (datos acotados).
+    tables: Dict[int, np.ndarray] = {}
+    for r in rows_df.collect():
+        i = r.fid
+        shape = (n_codes[i], n_y) + tuple(n_codes[c] for c in s_m if c != i)
+        arr = np.frombuffer(r.table, dtype=np.int64).reshape(shape)
+        if i in tables:
+            tables[i] += arr
+        else:
+            tables[i] = arr
+
+    cmis = np.zeros(k, dtype=np.float64)
+    for i in range(k):
+        t = tables.get(i)
+        if t is None or t.sum() == 0:
+            continue
+        # conditional_mi cubre todos los grados: 2D (cond vacío) es MI,
+        # 3D un condicionante, 4D dos.
+        cmis[i] = conditional_mi(t)
+    return cmis
 
 
 def dense_from_screening(

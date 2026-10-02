@@ -69,6 +69,17 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   (`etapa0`, `etapa1`, `etapa3` y `total`; no hay etapa 2). La reducción de
   filas se unifica en la función compartida a nivel de módulo
   `selector.subsample` (etapa 2 con `subsample`, KSG con `ksg_subsample`).
+- **Un solo hogar para las pasadas de conteo conjunto** (`tables.py`): el núcleo
+  `joint_counts(cols, sizes)` (pack→bincount→reshape, forma `tuple(sizes)` en el
+  orden de las columnas) resuelve las tres pasadas — screening (2 columnas),
+  tablas conjuntas de etapa 2 (3) y CMIM por ronda (4) —; los builders de
+  screening y de etapa 2 quedan como adaptadores delgados sobre él, y
+  `cmim_scores` se traslada a `tables.py` junto a su `mapInPandas`.
+  `criteria.py` conserva solo las fórmulas de criterios (`CRITERIA` +
+  `criterion_score`). En `info/entropy.py` `conditional_mi` acepta cualquier
+  grado (ndim ≥ 2): `mutual_information` pasa a ser el alias 2D y
+  `conditional_mi_multi` desaparece. `ksg_cmi` con condicionante vacío delega en
+  `ksg_mi`.
 
 ### Fixed
 

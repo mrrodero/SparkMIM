@@ -21,10 +21,9 @@ from typing import Dict, Protocol, Sequence, Tuple
 
 import numpy as np
 
-from .criteria import cmim_scores
 from .info.entropy import conditional_mi, mutual_information
 from .info.ksg import ksg_cmi, ksg_mi
-from .tables import TableCache
+from .tables import TableCache, cmim_scores
 
 __all__ = ["InformationOracle", "HistogramOracle", "KsgOracle"]
 
@@ -149,22 +148,17 @@ class KsgOracle:
     def cmi_set_all(self, s_m: Sequence[int]) -> np.ndarray:
         """CMI(X_i; Y | S_m \\ {i}) para todas las candidatas (numpy puro).
 
-        Con ``m ≤ 2`` (por diseño), ``cond`` tiene 0, 1 o 2 elementos:
-        0 → MI univariante; 1 → CMI con un condicionante; 2 → CMI con dos
-        condicionantes (``ksg_cmi`` con ``z`` de n×2).
+        Con ``m ≤ 2`` (por diseño), ``cond`` tiene 0, 1 o 2 elementos; el
+        caso vacío lo cubre el guard de ``ksg_cmi`` (la identidad degenera en
+        MI univariante), así que no hay ramificación por tamaño de ``cond``.
         """
         out = np.empty(self._X.shape[1], dtype=np.float64)
         for i in range(self._X.shape[1]):
             cond = tuple(s for s in s_m if s != i)
             key = (i, cond)
             if key not in self._cmi_set:
-                if len(cond) == 0:
-                    self._cmi_set[key] = self._mi_at(i)
-                elif len(cond) == 1:
-                    self._cmi_set[key] = self.cmi_single(i, cond[0])
-                else:
-                    self._cmi_set[key] = float(
-                        ksg_cmi(self._X[:, i], self._y, self._X[:, list(cond)], self._k)
-                    )
+                self._cmi_set[key] = float(
+                    ksg_cmi(self._X[:, i], self._y, self._X[:, list(cond)], self._k)
+                )
             out[i] = self._cmi_set[key]
         return out

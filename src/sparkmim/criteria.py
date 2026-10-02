@@ -8,31 +8,21 @@ acceso a la estructura de datos subyacente):
 - ``jmi``:  ``Σ_{Xi∈S} CMI(X;Y|Xi)``                     [``cmi_single``]
 - ``jmim``: ``min_{Xi∈S} CMI(X;Y|Xi)``                   [``cmi_single``] (default)
 
-``cmim`` es el único que requiere un pase ``mapInPandas`` extra por ronda:
-construye la conjunta ``(X, Y, S_m)`` sobre el subsample con ``S_m`` = top-m
-por MI univariante (m=2). Ver :func:`cmim_scores`. Aproximación documentada
-(CMIM exacto inabordable → acotado por diseño).
+``cmim`` es el único que requiere un pase ``mapInPandas`` extra por ronda;
+vive en ``tables.py`` (``cmim_scores``). Aproximación documentada (CMIM exacto
+inabordable → acotado por diseño).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
-import pandas as pd
-from pyspark.sql import DataFrame
-from pyspark.sql.types import BinaryType, IntegerType, StructField, StructType
-
-from .info.entropy import (
-    conditional_mi,
-    conditional_mi_multi,
-    mutual_information,
-)
 
 if TYPE_CHECKING:
     from .oracles import InformationOracle
 
-__all__ = ["CRITERIA", "criterion_score", "cmim_scores"]
+__all__ = ["CRITERIA", "criterion_score"]
 
 CRITERIA = ("mrmr", "mim", "jmi", "jmim", "cmim")
 
@@ -78,122 +68,3 @@ def criterion_score(
             return float(mi_xy[x])
         return float(min(oracle.cmi_single(x, s) for s in S))
     raise ValueError(f"criterio no soportado por criterion_score: {criterion!r}")
-
-
-# ---------------------------------------------------------------------------
-# CMIM: pase mapInPandas por ronda sobre el subsample.
-# ---------------------------------------------------------------------------
-
-
-def _cmim_partition(
-    pdf: pd.DataFrame,
-    candidate_cols: Sequence[str],
-    target_col: str,
-    n_codes: Sequence[int],
-    n_y: int,
-    s_m: Sequence[int],
-):
-    """Emite, por candidata ``i``, la conjunta ``(X_i, Y, S_m \\ {i})`` densa.
-
-    El conjunto de condicionamiento efectivo es ``S_m`` menos ``i`` (evita
-    condicionar en la propia candidata). Forma resultante:
-    - ``S_m \\ {i}`` vacío: ``(n_i, n_y)``
-    - 1 elemento: ``(n_i, n_y, n_c)``
-    - 2 elementos: ``(n_i, n_y, n_c0, n_c1)``
-    """
-    y = pdf[target_col].to_numpy().astype(np.int64)
-    k = len(candidate_cols)
-    xs = [pdf[col].to_numpy().astype(np.int64) for col in candidate_cols]
-    for i in range(k):
-        cond = [s for s in s_m if s != i]
-        ni = n_codes[i]
-        if len(cond) == 0:
-            packed = xs[i] * n_y + y
-            counts = np.bincount(packed, minlength=ni * n_y).reshape(ni, n_y)
-        elif len(cond) == 1:
-            c0 = cond[0]
-            n0 = n_codes[c0]
-            packed = (xs[i] * n_y + y) * n0 + xs[c0]
-            counts = np.bincount(packed, minlength=ni * n_y * n0).reshape(ni, n_y, n0)
-        else:
-            c0, c1 = cond[0], cond[1]
-            n0, n1 = n_codes[c0], n_codes[c1]
-            packed = ((xs[i] * n_y + y) * n0 + xs[c0]) * n1 + xs[c1]
-            counts = np.bincount(
-                packed, minlength=ni * n_y * n0 * n1
-            ).reshape(ni, n_y, n0, n1)
-        yield (i, counts.tobytes())
-
-
-_CMIM_SCHEMA = StructType(
-    [
-        StructField("fid", IntegerType()),
-        StructField("table", BinaryType()),
-    ]
-)
-
-
-def cmim_scores(
-    df: DataFrame,
-    candidate_cols: Sequence[str],
-    target_col: str,
-    n_codes: Sequence[int],
-    n_y: int,
-    s_m: Sequence[int],
-) -> np.ndarray:
-    """CMI(X_i; Y | S_m \\ {i}) para todas las candidatas ``i`` (UN pase).
-
-    Args:
-        df: DataFrame con códigos enteros (features + target), ya subsampleado.
-        candidate_cols: nombres de las columnas de candidatas (en orden).
-        target_col: nombre de la columna target.
-        n_codes: nº de códigos por candidata (misma longitud que ``candidate_cols``).
-        n_y: nº de códigos del target.
-        s_m: índices (0..K-1) del conjunto de condicionamiento ``S_m`` (m ≤ 2).
-
-    Returns:
-        Array ``CMI(X_i; Y | S_m \\ {i})`` por candidata (longitud K).
-    """
-    k = len(candidate_cols)
-
-    def _func(iterator):
-        for pdf in iterator:
-            rows = list(
-                _cmim_partition(pdf, candidate_cols, target_col, n_codes, n_y, s_m)
-            )
-            out = pd.DataFrame(rows, columns=["fid", "table"])
-            yield out.astype({"fid": "int64", "table": "object"})
-
-    rows_df = df.mapInPandas(_func, schema=_CMIM_SCHEMA)
-
-    # Suma las tablas por candidata en el driver (datos acotados).
-    tables: Dict[int, np.ndarray] = {}
-    for r in rows_df.collect():
-        i = r.fid
-        cond = [s for s in s_m if s != i]
-        ni = n_codes[i]
-        if len(cond) == 0:
-            shape = (ni, n_y)
-        elif len(cond) == 1:
-            shape = (ni, n_y, n_codes[cond[0]])
-        else:
-            shape = (ni, n_y, n_codes[cond[0]], n_codes[cond[1]])
-        arr = np.frombuffer(r.table, dtype=np.int64).reshape(shape)
-        if i in tables:
-            tables[i] += arr
-        else:
-            tables[i] = arr
-
-    cmis = np.zeros(k, dtype=np.float64)
-    for i in range(k):
-        t = tables.get(i)
-        if t is None or t.sum() == 0:
-            cmis[i] = 0.0
-            continue
-        if t.ndim == 2:
-            cmis[i] = mutual_information(t)
-        elif t.ndim == 3:
-            cmis[i] = conditional_mi(t)
-        else:
-            cmis[i] = conditional_mi_multi(t)
-    return cmis
