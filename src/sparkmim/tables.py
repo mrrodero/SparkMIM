@@ -15,7 +15,7 @@ Diseño (ver docs/DESIGN.md §2):
   driver como marginal sobre Y de la triple (evita duplicar el cómputo en el
   pase; mismo resultado que calcularlas aparte).
 - **Etapa 3 (CMIM, por ronda):** UN ``mapInPandas`` sobre el subsample emite,
-  por candidata, la conjunta ``(X_i, Y, S_m \ {i})`` → se suma en el driver →
+  por candidata, la conjunta ``(X_i, Y, S_m \\ {i})`` → se suma en el driver →
   ``cmim_scores``.
 
 Regla de diseño: nada de tamaño O(n) cruza al driver; todo lo que llega es
@@ -24,7 +24,10 @@ agregado y acotado por ``max_cache_cells``.
 
 from __future__ import annotations
 
-from typing import Dict, Sequence, Tuple
+from typing import Dict, Sequence, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .screen import ScreenResult
 
 import numpy as np
 import pandas as pd
@@ -346,6 +349,11 @@ class TableCache:
     almacenamiento: el llamador pide "la tabla de x condicionada en z" y
     recibe la tabla en la orientación que esperan las funciones de entropía
     (``mutual_information``: (n_x, n_y); ``conditional_mi``: (n_x, n_y, n_z)).
+
+    La traducción de índices globales de Feature a posiciones de Candidate
+    (``0..K-1``, el espacio del seam ``InformationOracle``) vive en
+    ``from_screening``, el camino del pipeline. ``__init__`` queda para
+    construcción directa (tests que arman cachés sin resultado de Screening).
     """
 
     def __init__(
@@ -360,6 +368,82 @@ class TableCache:
         self.univariate = dict(univariate or {})
         self.triples = dict(triples or {})
         self._pairs: Dict[Tuple[int, int], np.ndarray] = {}
+
+    @classmethod
+    def from_screening(
+        cls,
+        screen_result: "ScreenResult",
+        candidates: Sequence[int],
+        triples: Dict[Tuple[int, int], np.ndarray],
+    ) -> "TableCache":
+        """Caché a partir del Screening: la traducción global→posición vive aquí.
+
+        ``candidates`` son índices globales de Feature (el espacio del
+        Screening); la caché trabaja en posiciones ``0..K-1`` (el espacio del
+        seam ``InformationOracle``, ADR-0001). ``n_codes`` y ``n_y`` se derivan
+        de las formas de las tablas de screening, y el cableado se valida por
+        construcción: claves canónicas dentro de ``0..K-1``, todos los pares
+        presentes y formas ``(n_i, n_j, n_y)`` coherentes.
+
+        Args:
+            screen_result: resultado de la etapa 1 (``tables`` por fid global).
+            candidates: índices globales de las Candidates, en orden de selección.
+            triples: tablas ``(n_i, n_j, n_y)`` con clave canónica en el espacio
+                de posiciones de Candidate.
+
+        Raises:
+            ValueError: candidates vacío, falta una tabla de screening, una clave
+                de ``triples`` que no es par canónico dentro de ``0..K-1``, un
+                par ausente, o una forma que no corresponde a ``(n_i, n_j, n_y)``.
+        """
+        k = len(candidates)
+        if k == 0:
+            raise ValueError("from_screening requiere al menos una candidata")
+
+        univariate: Dict[int, np.ndarray] = {}
+        for i, fid in enumerate(candidates):
+            if fid not in screen_result.tables:
+                raise ValueError(f"falta la tabla de screening de la candidata {fid}")
+            t = screen_result.tables[fid]
+            if t.ndim != 2:
+                raise ValueError(
+                    f"tabla de screening de la candidata {i} con forma {tuple(t.shape)}, "
+                    "se espera 2D"
+                )
+            univariate[i] = t
+
+        n_codes = [int(t.shape[0]) for t in univariate.values()]
+        n_y = int(univariate[0].shape[1])
+        for i, t in univariate.items():
+            if int(t.shape[1]) != n_y:
+                raise ValueError(
+                    f"tabla de screening de la candidata {i} con n_y={t.shape[1]}, "
+                    f"se espera n_y={n_y}"
+                )
+
+        for key in triples:
+            if not (isinstance(key, tuple) and len(key) == 2):
+                raise ValueError(f"clave de triples no es un par: {key!r}")
+            i, j = key
+            if i >= j or j >= k:
+                raise ValueError(
+                    f"clave {key!r} no es un par canónico dentro de 0..{k - 1}"
+                )
+
+        expected_pairs = {(i, j) for i in range(k) for j in range(i + 1, k)}
+        for key in expected_pairs:
+            if key not in triples:
+                raise ValueError(f"falta el par canónico {key} en triples")
+
+        for key, t in triples.items():
+            i, j = key
+            expected_shape = (n_codes[i], n_codes[j], n_y)
+            if tuple(t.shape) != expected_shape:
+                raise ValueError(
+                    f"triple {key} con forma {tuple(t.shape)}, se espera {expected_shape}"
+                )
+
+        return cls(n_codes=n_codes, n_y=n_y, univariate=univariate, triples=triples)
 
     def uni(self, fid: int) -> np.ndarray:
         """Tabla (n_x, n_y) de la feature ``fid`` vs target."""

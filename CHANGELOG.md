@@ -80,6 +80,14 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
   grado (ndim ≥ 2): `mutual_information` pasa a ser el alias 2D y
   `conditional_mi_multi` desaparece. `ksg_cmi` con condicionante vacío delega en
   `ksg_mi`.
+- **Traducción de índices dentro de la caché** (`tables.py`, `selector.py`):
+  `TableCache.from_screening(screen_result, candidates, triples)` es el camino
+  del pipeline — la traducción de índices globales de Feature a posiciones de
+  Candidate (0..K−1) y la derivación de `n_codes`/`n_y` desde las formas de las
+  tablas de screening viven en la caché, que además valida el cableado por
+  construcción (claves canónicas dentro de 0..K−1, todos los pares presentes,
+  formas `(n_i, n_j, n_y)`) y lanza `ValueError` si algo no corresponde.
+  `TableCache.__init__` sigue disponible para construcción directa.
 
 ### Fixed
 

@@ -65,6 +65,9 @@ un `mapInPandas` emite las tablas conjuntas de **pares** y **triples**
 calcular CMI de forma exacta (o aproximada) en la etapa 3 sin volver a tocar
 los datos.
 
+La caché se arma con `TableCache.from_screening(...)`: la traducción de índices
+globales de Feature a posiciones de Candidate (0..K−1), las dimensiones `n_codes`/`n_y` y la validación del cableado viven ahí, no en el orquestador.
+
 ### Etapa 3 — Selección greedy (solo driver)
 
 Bucle greedy único (`selection.greedy_select`) detrás de la costura
@@ -92,7 +95,7 @@ Bucle greedy único (`selection.greedy_select`) detrás de la costura
 preprocess.py   esquema + preprocesado (etapa 0)
 screen.py       screening univariante (etapa 1)
 significance.py costura SignificanceTest + adaptadores (etapa 1)
-tables.py       joint_counts (núcleo de conteo) + tablas + TableCache (etapa 2, accesores orientados)
+tables.py       joint_counts (núcleo de conteo) + tablas + TableCache (etapa 2, factory + accesores orientados)
 oracles.py      InformationOracle + adaptadores (costura, etapa 3)
 selection.py    bucle greedy único (etapa 3, driver)
 criteria.py     fórmulas de criterios (puras sobre el oráculo)

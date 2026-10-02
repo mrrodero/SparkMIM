@@ -289,13 +289,13 @@ def test_histogram_oracle_cmi_set_matches_conditional_mi(eq_df):
     sub = prepared.df_prep
     rows_df = build_joint_tables(sub, candidate_cols, "y", candidate_n_codes, n_y)
     triples = dense_from_joints(rows_df, candidate_n_codes, n_y)
-    univariate = {i: screen_result.tables[candidates[i]] for i in range(K)}
-    cache = TableCache(
-        n_codes=candidate_n_codes,
-        n_y=n_y,
-        univariate=univariate,
-        triples=triples,
-    )
+    cache = TableCache.from_screening(screen_result, candidates, triples)
+    # La traducción global→posición la hace la factory: la caché vive en el
+    # espacio de posiciones de Candidate (0..K-1).
+    assert cache.n_codes == candidate_n_codes
+    assert cache.n_y == n_y
+    for i, fid in enumerate(candidates):
+        np.testing.assert_array_equal(cache.uni(i), screen_result.tables[fid])
     oracle = HistogramOracle(cache, sub, candidate_cols, "y", candidate_n_codes, n_y)
 
     # S_m = top-2 por MI (posiciones 0, 1: candidatas ordenadas por MI desc).
