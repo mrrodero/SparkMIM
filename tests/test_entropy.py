@@ -98,3 +98,50 @@ def test_cmi_positive_when_z_shares_info():
     for a, b, c in zip(x, y, z):
         table[a, b, c] += 1
     assert conditional_mi(table) > 0
+
+
+def test_conditional_mi_2d_is_mutual_information():
+    """Condicionante vacío: la fórmula unificada se reduce exactamente a MI."""
+    table = np.array([[10, 20], [30, 40]], dtype=np.int64)
+    assert conditional_mi(table) == pytest.approx(mutual_information(table), abs=1e-12)
+    # Y coincide con la identidad de entropías H(X) + H(Y) - H(X,Y).
+    expected = (
+        entropy_from_counts(table.sum(axis=1))
+        + entropy_from_counts(table.sum(axis=0))
+        - entropy_from_counts(table)
+    )
+    assert conditional_mi(table) == pytest.approx(expected, abs=1e-12)
+
+
+def test_conditional_mi_4d_matches_entropy_definition():
+    """CMI(X;Y|Z1,Z2) sobre conteos exactos, contra H(X|Z)+H(Y|Z)-H(X,Y|Z)."""
+    rng = np.random.default_rng(1)
+    n = 3000
+    x = rng.integers(0, 3, n)
+    y = rng.integers(0, 2, n)
+    z1 = rng.integers(0, 4, n)
+    z2 = rng.integers(0, 2, n)
+    table = np.zeros((3, 2, 4, 2), dtype=np.int64)
+    for a, b, c, d in zip(x, y, z1, z2):
+        table[a, b, c, d] += 1
+
+    total = int(table.sum())
+    pz_counts = table.sum(axis=(0, 1))  # (Z1, Z2)
+
+    def h_given_z(marginal):
+        """H(variables | Z1, Z2) como suma ponderada por rebanadas de Z."""
+        acc = 0.0
+        for c0 in range(pz_counts.shape[0]):
+            for c1 in range(pz_counts.shape[1]):
+                pz = pz_counts[c0, c1]
+                if pz == 0:
+                    continue
+                acc += (pz / total) * entropy_from_counts(marginal[..., c0, c1])
+        return acc
+
+    expected = (
+        h_given_z(table.sum(axis=1))  # (X, Z1, Z2)
+        + h_given_z(table.sum(axis=0))  # (Y, Z1, Z2)
+        - h_given_z(table)  # (X, Y, Z1, Z2)
+    )
+    assert conditional_mi(table) == pytest.approx(expected, abs=1e-12)

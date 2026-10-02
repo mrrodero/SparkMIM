@@ -60,11 +60,16 @@ def ksg_mi(a, b, k: int = 10) -> float:
 def ksg_cmi(x, y, z, k: int = 10) -> float:
     """CMI(X;Y|Z) = MI(XZ;Y) − MI(Z;Y), con ``z`` (n×d_z).
 
+    Con ``z`` vacío (n×0) la identidad degenera en ``MI(X;Y)``: se resuelve
+    aquí porque ``cKDTree`` exige dimensión ≥ 1.
+
     Devuelve float en nats (puede ser ligeramente negativo por ruido; no se
     acota, ya que en el greedy un CMI ≤ 0 significa "no aporta información").
     """
     x = _as_2d(x)
     y = _as_2d(y)
     z = _as_2d(z)
+    if z.shape[1] == 0:
+        return ksg_mi(x, y, k)
     xz = np.hstack([x, z])
     return ksg_mi(xz, y, k) - ksg_mi(z, y, k)

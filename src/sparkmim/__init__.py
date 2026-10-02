@@ -13,7 +13,6 @@ from .info.entropy import (
     joint_entropy_from_counts,
     mutual_information,
     conditional_mi,
-    conditional_mi_multi,
 )
 
 # Estimador KSG opcional (Hito 5).
@@ -55,7 +54,6 @@ __all__ = [
     "joint_entropy_from_counts",
     "mutual_information",
     "conditional_mi",
-    "conditional_mi_multi",
     # KSG
     "ksg_mi",
     "ksg_cmi",

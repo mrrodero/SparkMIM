@@ -17,6 +17,7 @@ from sparkmim.tables import (
     build_screening_tables,
     dense_from_joints,
     dense_from_screening,
+    joint_counts,
 )
 
 
@@ -84,6 +85,57 @@ def _ref_triple(xi, xj, y, ni, nj, ny):
     for a, b, z in zip(xi, xj, y):
         c[a, b, z] += 1
     return c
+
+
+def _ref_counts(cols, sizes):
+    c = np.zeros(tuple(sizes), dtype=np.int64)
+    for row in zip(*cols):
+        c[row] += 1
+    return c
+
+
+# --- El núcleo joint_counts, contra conteos plantados (2, 3 y 4 columnas) ---
+
+
+def test_joint_counts_2_columns_matches_planted_table():
+    cols = [np.array([r[i] for r in ROWS]) for i in range(3)]
+    y = np.array([r[3] for r in ROWS])
+    for fid in range(3):
+        np.testing.assert_array_equal(
+            joint_counts([cols[fid], y], (N_X[fid], N_Y)),
+            _ref_counts([cols[fid], y], (N_X[fid], N_Y)),
+        )
+
+
+def test_joint_counts_3_columns_matches_planted_table():
+    cols = [np.array([r[i] for r in ROWS]) for i in range(3)]
+    y = np.array([r[3] for r in ROWS])
+    for i in range(3):
+        for j in range(i + 1, 3):
+            sizes = (N_X[i], N_X[j], N_Y)
+            np.testing.assert_array_equal(
+                joint_counts([cols[i], cols[j], y], sizes),
+                _ref_counts([cols[i], cols[j], y], sizes),
+            )
+
+
+def test_joint_counts_4_columns_matches_planted_table():
+    # (X_i, Y, Z1, Z2): la forma sale del orden de las columnas.
+    rng = np.random.default_rng(7)
+    n = 500
+    sizes = (3, 2, 4, 5)
+    cols = [rng.integers(0, s, size=n) for s in sizes]
+    np.testing.assert_array_equal(joint_counts(cols, sizes), _ref_counts(cols, sizes))
+
+
+def test_joint_counts_shape_follows_column_order():
+    # El mismo par de columnas en otro orden da la tabla transpuesta.
+    x = np.array([r[0] for r in ROWS])
+    y = np.array([r[3] for r in ROWS])
+    np.testing.assert_array_equal(
+        joint_counts([y, x], (N_Y, N_X[0])),
+        joint_counts([x, y], (N_X[0], N_Y)).T,
+    )
 
 
 def test_screening_matches_reference(spark):
