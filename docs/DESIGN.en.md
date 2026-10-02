@@ -64,6 +64,9 @@ policy, the same one the KSG mode applies with `ksg_subsample` — a
 computing CMI exactly (or approximately) in stage 3 without touching the data
 again.
 
+The cache is built with `TableCache.from_screening(...)`: the translation from global
+Feature indices to candidate positions (0..K−1), the `n_codes`/`n_y` sizes, and the wiring validation live there, not in the orchestrator.
+
 ### Stage 3 — Greedy selection (driver only)
 
 Single greedy loop (`selection.greedy_select`) behind the
@@ -90,7 +93,7 @@ Single greedy loop (`selection.greedy_select`) behind the
 preprocess.py   schema + preprocessing (stage 0)
 screen.py       univariate screening (stage 1)
 significance.py SignificanceTest seam + adapters (stage 1)
-tables.py       joint_counts (counting core) + tables + TableCache (stage 2, oriented accessors)
+tables.py       joint_counts (counting core) + tables + TableCache (stage 2, factory + oriented accessors)
 oracles.py      InformationOracle + adapters (seam, stage 3)
 selection.py    single greedy loop (stage 3, driver)
 criteria.py     criterion formulas (pure over the oracle)

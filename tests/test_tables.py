@@ -11,6 +11,7 @@ from pyspark.sql import SparkSession
 from sparkmim.criteria import criterion_score
 from sparkmim.info.entropy import conditional_mi, mutual_information
 from sparkmim.oracles import HistogramOracle
+from sparkmim.screen import ScreenResult
 from sparkmim.tables import (
     TableCache,
     build_joint_tables,
@@ -273,3 +274,89 @@ def test_criterion_score_on_handbuilt_cache():
     )
     # Ronda 1 (S vacío): MI univariante, cualquiera sea el criterio.
     assert criterion_score(0, [], oracle, mi, "jmim") == pytest.approx(mi[0], abs=1e-12)
+
+
+# --- La factory: traducción global→posición y validación del cableado ---
+
+
+def _screen_result(candidates, tables):
+    """ScreenResult mínimo para la factory (sin Spark, sin significancia)."""
+    return ScreenResult(
+        mi=np.zeros(len(tables)),
+        pvalues=np.ones(len(tables)),
+        significant=np.ones(len(tables), dtype=bool),
+        candidates=list(candidates),
+        tables=dict(tables),
+        n_rows=int(next(iter(tables.values())).sum()),
+    )
+
+
+# Candidatas globales [3, 0, 4] → posiciones de Candidate 0, 1, 2.
+_F_FIDS = [3, 0, 4]
+_F_TABLES = {
+    3: np.full((3, 2), 2, dtype=np.int64),
+    0: np.full((2, 2), 1, dtype=np.int64),
+    4: np.full((4, 2), 3, dtype=np.int64),
+}
+_F_TRIPLES = {
+    (0, 1): np.full((3, 2, 2), 5, dtype=np.int64),
+    (0, 2): np.full((3, 4, 2), 6, dtype=np.int64),
+    (1, 2): np.full((2, 4, 2), 7, dtype=np.int64),
+}
+
+
+def test_from_screening_translates_global_indices_to_positions():
+    cache = TableCache.from_screening(_screen_result(_F_FIDS, _F_TABLES), _F_FIDS, _F_TRIPLES)
+    # n_codes y n_y salen de las formas de las tablas de screening, en el orden
+    # de las candidatas.
+    assert cache.n_codes == [3, 2, 4]
+    assert cache.n_y == 2
+    # uni(i) es la tabla del fid global candidates[i].
+    for i, fid in enumerate(_F_FIDS):
+        np.testing.assert_array_equal(cache.uni(i), _F_TABLES[fid])
+    # El acceso por posición sigue siendo canónico.
+    np.testing.assert_array_equal(cache.triple(1, 0), _F_TRIPLES[(0, 1)])
+    np.testing.assert_array_equal(cache.triple(2, 0), _F_TRIPLES[(0, 2)])
+
+
+def test_from_screening_rejects_non_canonical_key():
+    bad = {(1, 0): _F_TRIPLES[(0, 1)], (0, 2): _F_TRIPLES[(0, 2)], (1, 2): _F_TRIPLES[(1, 2)]}
+    with pytest.raises(ValueError, match="canónico"):
+        TableCache.from_screening(_screen_result(_F_FIDS, _F_TABLES), _F_FIDS, bad)
+
+
+def test_from_screening_rejects_key_out_of_position_range():
+    # Clave en el espacio global (fid 4 y 3), no en posiciones 0..2.
+    bad = {(3, 4): np.full((3, 4, 2), 1, dtype=np.int64)}
+    with pytest.raises(ValueError, match="canónico"):
+        TableCache.from_screening(_screen_result(_F_FIDS, _F_TABLES), _F_FIDS, bad)
+
+
+def test_from_screening_rejects_missing_pair():
+    bad = {(0, 1): _F_TRIPLES[(0, 1)], (0, 2): _F_TRIPLES[(0, 2)]}
+    with pytest.raises(ValueError, match="falta el par"):
+        TableCache.from_screening(_screen_result(_F_FIDS, _F_TABLES), _F_FIDS, bad)
+
+
+def test_from_screening_rejects_shape_mismatch():
+    # (0, 2) con los ejes de la tabla global (4, 3, 2) en vez de (3, 4, 2).
+    bad = dict(_F_TRIPLES)
+    bad[(0, 2)] = np.full((4, 3, 2), 6, dtype=np.int64)
+    with pytest.raises(ValueError, match="se espera"):
+        TableCache.from_screening(_screen_result(_F_FIDS, _F_TABLES), _F_FIDS, bad)
+
+
+def test_from_screening_rejects_missing_screening_table():
+    tables = {k: v for k, v in _F_TABLES.items() if k != 0}
+    with pytest.raises(ValueError, match="tabla de screening"):
+        TableCache.from_screening(_screen_result(_F_FIDS, tables), _F_FIDS, _F_TRIPLES)
+
+
+def test_from_screening_accepts_single_candidate():
+    # K = 1: no hay pares; la caché se arma solo con la univariante.
+    cache = TableCache.from_screening(
+        _screen_result([4], {4: _F_TABLES[4]}), [4], {}
+    )
+    assert cache.n_codes == [4]
+    assert cache.n_y == 2
+    np.testing.assert_array_equal(cache.uni(0), _F_TABLES[4])

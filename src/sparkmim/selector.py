@@ -175,14 +175,9 @@ class InfoSelector:
         sub = subsample(df_prep, config.subsample, config.seed)
         rows_df = build_joint_tables(sub, candidate_cols, target_col, candidate_n_codes, n_y)
         triples = dense_from_joints(rows_df, candidate_n_codes, n_y)
-        # Univariantes: tabla de screening de cada candidata (índice de candidata).
-        univariate = {i: screen_result.tables[candidates[i]] for i in range(K)}
-        cache = TableCache(
-            n_codes=candidate_n_codes,
-            n_y=n_y,
-            univariate=univariate,
-            triples=triples,
-        )
+        # La traducción global→posición de Candidate y la validación del
+        # cableado viven en la caché, no aquí.
+        cache = TableCache.from_screening(screen_result, candidates, triples)
         timings["etapa2"] = time.perf_counter() - t
 
         # Etapa 3: oráculo de información + selección greedy (driver).
