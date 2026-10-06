@@ -11,6 +11,21 @@ versionado sigue [SemVer](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
+### Added
+
+- **Herramientas de la rejilla de benchmarks** (`benchmarks/`): `bench_grid.py`
+  recorre la rejilla n×NF ejecutando cada punto en un proceso nuevo (JVM limpia),
+  con round-trip por Parquet para evitar el OOM del conversor pandas→Arrow,
+  presupuesto de RAM configurable y skips registrados; `plot_grid.py` genera el
+  informe HTML con Plotly y `run_benchmark.ps1` lanza la rejilla completa. La
+  memoria en pico se registra separada en `python_rss_mb` (RSS del proceso
+  Python) y `jvm_rss_mb` (RSS de la JVM, buscándola entre los descendientes,
+  ya que pyspark la lanza vía `cmd /c`); los puntos históricos conservan
+  `driver_mem_mb` como RSS de Python. Las salidas (`*.json`, `*.html`, `*.log`)
+  quedan fuera del control de versiones.
+
 ### Changed
 
 - **Costura de oráculo de información** (`oracles.py`, `selection.py`,
