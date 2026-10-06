@@ -183,3 +183,66 @@ def test_constant_feature_one_bin(spark):
     assert spec.bin_edges == ()
     codes = [r[0] for r in prep.df_prep.select("x").collect()]
     assert set(codes) == {0}
+
+
+# --- Etapa 0: representación del target según la Task ---
+
+
+def test_int_target_15_classes_auto_multiclass(spark):
+    """Target entero de 15 clases con task ``auto`` → multiclase: 15 códigos,
+    uno por valor distinto."""
+    rng = np.random.default_rng(0)
+    n = 10_000
+    x = rng.uniform(0, 1, n)
+    y = rng.integers(0, 15, n)
+    df = spark.createDataFrame(list(zip(x.tolist(), y.tolist())), "x: double, y: long")
+    prep = prepare(df, _cfg(bins=10, missing="drop"))
+    assert prep.task == "classifier_multiclass"
+    spec = prep.schema.target
+    assert spec.kind == "categorical"
+    assert spec.n_codes == 15
+    codes = [r[0] for r in prep.df_prep.select("y").collect()]
+    # Los códigos renumeran las clases (en orden de frecuencia); el mapeo
+    # es coherente fila a fila y usa los 15 códigos.
+    assert set(codes) == set(range(15))
+    assert codes == [spec.category_codes[str(v)] for v in y.tolist()]
+
+
+def test_float_target_declared_multiclass(spark):
+    """Target float de 5 niveles declarado ``classifier_multiclass`` → 5
+    códigos, uno por valor distinto."""
+    rng = np.random.default_rng(0)
+    n = 10_000
+    x = rng.uniform(0, 1, n)
+    y = rng.choice([0.0, 0.25, 0.5, 0.75, 1.0], size=n)
+    df = spark.createDataFrame(
+        list(zip(x.tolist(), y.tolist())), "x: double, y: double"
+    )
+    prep = prepare(
+        df, _cfg(bins=10, task="classifier_multiclass", missing="drop")
+    )
+    assert prep.task == "classifier_multiclass"
+    spec = prep.schema.target
+    assert spec.kind == "categorical"
+    assert spec.n_codes == 5
+    codes = [r[0] for r in prep.df_prep.select("y").collect()]
+    # Mapeo coherente fila a fila (las claves del mapa son strings) y
+    # se usan los 5 códigos.
+    assert set(codes) == set(range(5))
+    assert codes == [spec.category_codes[str(v)] for v in y.tolist()]
+
+
+def test_int_target_declared_continuous(spark):
+    """Target entero declarado ``continuous`` → binning cuantil (10 bins)."""
+    rng = np.random.default_rng(0)
+    n = 10_000
+    x = rng.uniform(0, 1, n)
+    y = rng.integers(0, 100, n)
+    df = spark.createDataFrame(list(zip(x.tolist(), y.tolist())), "x: double, y: long")
+    prep = prepare(
+        df, _cfg(bins=10, bins_target=10, task="continuous", missing="drop")
+    )
+    assert prep.task == "continuous"
+    spec = prep.schema.target
+    assert spec.kind == "numeric"
+    assert spec.n_codes == 10

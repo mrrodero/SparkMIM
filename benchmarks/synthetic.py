@@ -1,5 +1,9 @@
 """Generador de datos sintéticos con estructura plantada (Hito 7).
 
+Adaptador fino sobre el generador compartido ``tests/planted.py``: construye
+la estructura clásica de benchmark y delega la generación, de modo que tests
+y benchmarks comparten una única implementación de la estructura plantada.
+
 Genera ``n`` filas y ``N`` features:
 - ``n_informative`` features informativas (determinan el target).
 - ``n_redundant`` features redundantes (copias ruidosas de las informativas).
@@ -15,9 +19,18 @@ Uso:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Dict
 
 import numpy as np
+
+# El generador compartido vive en tests/ (sin paquete instalado).
+_TESTS = str(Path(__file__).resolve().parent.parent / "tests")
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+
+from planted import Feature, Target, make_planted  # noqa: E402
 
 __all__ = ["generate"]
 
@@ -49,29 +62,17 @@ def generate(
             f"n_informative + n_redundant ({n_informative + n_redundant}) "
             f"> n_features ({n_features})"
         )
-    n_noise = n_features - n_informative - n_redundant
-    rng = np.random.default_rng(seed)
-
-    data: Dict[str, np.ndarray] = {}
-    # Informativas.
-    for i in range(n_informative):
-        data[f"x{i}"] = rng.normal(size=n)
-    # Redundantes (copias ruidosas de las informativas).
-    for i in range(n_redundant):
-        src = i % n_informative
-        data[f"r{i}"] = data[f"x{src}"] + 0.01 * rng.normal(size=n)
-    # Ruido independiente.
-    for i in range(n_noise):
-        data[f"n{i}"] = rng.normal(size=n)
-
-    # Target: función de las informativas + ruido.
-    informative = np.stack([data[f"x{i}"] for i in range(n_informative)], axis=1)
-    score = informative.sum(axis=1)
-    if task == "classification":
-        y = (score + 0.5 * rng.normal(size=n) > 0).astype(int)
-    elif task == "regression":
-        y = score + 0.1 * rng.normal(size=n)
-    else:
+    if task not in ("classification", "regression"):
         raise ValueError(f"task debe ser 'classification' o 'regression' (recibido {task!r})")
-    data["y"] = y
-    return data
+    features = [Feature(f"x{i}", "informative") for i in range(n_informative)]
+    features += [
+        Feature(f"r{i}", "redundant", copy_of=f"x{i % n_informative}", copy_noise=0.01)
+        for i in range(n_redundant)
+    ]
+    n_noise = n_features - n_informative - n_redundant
+    features += [Feature(f"n{i}", "independent") for i in range(n_noise)]
+    if task == "classification":
+        target = Target(kind="linear", noise=0.5, thresholds=(0.0,))
+    else:
+        target = Target(kind="linear", noise=0.1)
+    return make_planted(n, seed, features, target)

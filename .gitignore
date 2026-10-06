@@ -16,6 +16,12 @@ spark-logs/
 metastore_db/
 spark-events/
 
+# Salidas del benchmark
+benchmarks/*.json
+benchmarks/*.html
+benchmarks/*.log
+benchmarks/.tmp/
+
 # JDK local (Temurin 17) y artefactos de instalación
 jdk17/
 _pipcache/

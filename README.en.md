@@ -8,7 +8,7 @@ variables. Integrated model-agnostic evaluation (GBT/XGBoost/LightGBM in
 Spark).
 
 > **Español:** see [README.md](README.md).
-> **Full design:** [DESIGN.md](DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
+> **Full design:** [docs/DESIGN.md](docs/DESIGN.md) (ES) / [docs/DESIGN.en.md](docs/DESIGN.en.md) (EN).
 
 ---
 
@@ -87,6 +87,12 @@ model = sel.fit(df)
 > **Trade-off:** KSG mode subsamples ≤ `ksg_subsample` (250k) rows to the
 > driver and computes MI/CMI by kNN there. It is the only route with global
 > kNN in the driver; suitable for moderate n, not for 10⁷.
+
+> **Fields per mode:** in KSG only `ksg_k` and `ksg_subsample` apply (plus the
+> shared ones); histogram fields (`bins`, `significance`, `subsample`, ...)
+> must keep their default value, otherwise construction raises `ValueError`.
+> KSG mode requires numeric columns (features and target): otherwise `fit`
+> raises `ValueError` naming the offending columns.
 
 ---
 
@@ -201,8 +207,9 @@ sparkmim/
 │   ├── synthetic.py     # synthetic generator
 │   └── bench_scale.py   # scale benchmark
 ├── tests/               # pytest (unit + e2e)
-├── DESIGN.md            # design (ES)
-├── docs/DESIGN.en.md    # design (EN)
+├── docs/
+│   ├── DESIGN.md        # design (ES)
+│   └── DESIGN.en.md     # design (EN)
 ├── README.md            # (ES)
 └── README.en.md         # (EN)
 ```

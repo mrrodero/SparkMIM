@@ -13,13 +13,12 @@ from .info.entropy import (
     joint_entropy_from_counts,
     mutual_information,
     conditional_mi,
-    conditional_mi_multi,
 )
 
 # Estimador KSG opcional (Hito 5).
 from .info.ksg import ksg_cmi, ksg_mi
 
-# Evaluación agnóstica al modelo (Hito 6).
+# Evaluación agnóstica al modelo (Hito 6) + costura de fábricas de modelos.
 from .evaluate import (
     EvaluationReport,
     auc_binary,
@@ -28,6 +27,13 @@ from .evaluate import (
     report,
     r2_score,
     train_and_evaluate,
+)
+from .model_factory import (
+    GbtFactory,
+    LightgbmFactory,
+    ModelFactory,
+    XgboostFactory,
+    make_model_factory,
 )
 
 # Configuración, esquema, preprocesado, screening (hitos 2-3).
@@ -48,7 +54,6 @@ __all__ = [
     "joint_entropy_from_counts",
     "mutual_information",
     "conditional_mi",
-    "conditional_mi_multi",
     # KSG
     "ksg_mi",
     "ksg_cmi",
@@ -60,6 +65,12 @@ __all__ = [
     "report",
     "efficiency_curve",
     "train_and_evaluate",
+    # costura de fábricas de modelos
+    "ModelFactory",
+    "GbtFactory",
+    "XgboostFactory",
+    "LightgbmFactory",
+    "make_model_factory",
     # config / model / selectores
     "SelectorConfig",
     "SelectorModel",

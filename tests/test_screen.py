@@ -11,7 +11,8 @@ from pyspark.sql import SparkSession
 
 from sparkmim.config import SelectorConfig
 from sparkmim.schema import FeatureSpec, Schema
-from sparkmim.screen import screen
+from sparkmim.screen import rank, screen, select_candidates
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -36,13 +37,39 @@ def _make_screen_df(spark, n=2000, seed=0):
     - x1: 70% correlada con y (moderada).
     - x2: independiente de y (ruido).
     """
-    rng = np.random.default_rng(seed)
-    y = rng.integers(0, 2, size=n)
-    x0 = np.where(rng.random(n) < 0.8, y, 1 - y)
-    x1 = np.where(rng.random(n) < 0.7, y, 1 - y)
-    x2 = rng.integers(0, 2, size=n)
-    rows = [(int(a), int(b), int(c), int(d)) for a, b, c, d in zip(x0, x1, x2, y)]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "y"])
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "correlated", agreement=0.8),
+            Feature("x1", "correlated", agreement=0.7),
+            Feature("x2", "independent", kind="bernoulli"),
+        ],
+        Target(kind="flip"),
+    )
+    return to_spark_df(spark, data)
+
+
+def test_select_candidates_pure():
+    # Top-2 por MI entre las significativas: x0 (0.9) y x3 (0.7).
+    mi = np.array([0.9, 0.5, 0.1, 0.7])
+    significant = np.array([True, True, False, True])
+    assert select_candidates(mi, significant, 2) == [0, 3]
+    # Sin significativas => vacío.
+    assert select_candidates(mi, np.zeros(4, dtype=bool), 2) == []
+    # k mayor que el nº de significativas => todas, en orden de MI.
+    assert select_candidates(mi, significant, 10) == [0, 3, 1]
+
+
+def test_rank_pure():
+    # Descendente por MI; estable en empates (conserva el orden de entrada).
+    mi = np.array([0.5, 1.0, 0.5, 2.0])
+    names = ["a", "b", "c", "d"]
+    assert rank(mi, names) == [("d", 2.0), ("b", 1.0), ("a", 0.5), ("c", 0.5)]
+
+
+def test_rank_empty():
+    assert rank(np.array([]), []) == []
 
 
 def _make_schema():

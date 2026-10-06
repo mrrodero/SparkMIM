@@ -3,16 +3,16 @@
 Estructura plantada:
 - ``x0``, ``x1``: informativas (``y = x0 AND x1`` con ruido 10%).
 - ``x2``: independiente de ``y``.
-- ``x3``: casi redundante con ``x0`` (``x0`` con ruido 5%).
+- ``x3``: redundante exacta con ``x0``.
 
 Con ``significance="chi2"`` (default), el screening descarta ``x2`` (MI≈0)
 antes del greedy; el greedy descarta ``x3`` (redundante). Se verifica que el
 resultado sea ``{x0, x1}`` para cada criterio.
 """
 
-import numpy as np
 import pytest
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 from sparkmim import (
     CMIMSelector,
@@ -21,6 +21,8 @@ from sparkmim import (
     MIMSelector,
     MRMRSelector,
 )
+from sparkmim.selector import subsample
+from planted import Feature, Target, make_planted, to_spark_df
 
 
 @pytest.fixture(scope="module")
@@ -39,20 +41,22 @@ def spark():
 
 
 def _make_df(spark, n, seed):
-    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta)."""
-    rng = np.random.default_rng(seed)
-    x0 = rng.integers(0, 2, size=n)
-    x1 = rng.integers(0, 2, size=n)
-    x2 = rng.integers(0, 2, size=n)
-    x3 = x0.copy()  # redundante exacta: CMI(x3; y | x0) = 0.
-    y = (x0 & x1).astype(int)
-    noise = rng.random(n) < 0.1
-    y = np.where(noise, 1 - y, y)
-    rows = [
-        (str(a), str(b), str(c), str(d), str(e))
-        for a, b, c, d, e in zip(x0, x1, x2, x3, y)
-    ]
-    return spark.createDataFrame(rows, ["x0", "x1", "x2", "x3", "y"])
+    """x0, x1 informativas; x2 independiente; x3 redundante con x0 (exacta).
+
+    ``y = x0 AND x1`` con 10% de ruido (ver ``planted.make_planted``).
+    """
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "informative", kind="bernoulli"),
+            Feature("x1", "informative", kind="bernoulli"),
+            Feature("x2", "independent", kind="bernoulli"),
+            Feature("x3", "redundant", copy_of="x0"),
+        ],
+        Target(kind="and", noise=0.1),
+    )
+    return to_spark_df(spark, data, as_strings=True)
 
 
 @pytest.fixture(scope="module")
@@ -159,3 +163,112 @@ def test_transform(df):
 def test_invalid_criterion_raises():
     with pytest.raises(ValueError):
         InfoSelector(target="y", criterion="bogus")
+
+
+# --- subsample (política compartida de reducción de filas) ---
+
+
+def test_subsample_identity_when_small(df):
+    # n=4000 ≤ 5000 → identidad (mismo frame, sin re-muestrear).
+    out = subsample(df, 5000, 42)
+    assert out.count() == 4000
+
+
+def test_subsample_reduces_and_is_deterministic(df):
+    # n=4000 > 1000 → submuestra sin reemplazo de ≈ 1000 filas (la fracción
+    # de Spark es probabilística, no exacta), determinista con la semilla.
+    a = subsample(df, 1000, 42)
+    b = subsample(df, 1000, 42)
+    assert 0 < a.count() < 4000
+    assert a.collect() == b.collect()
+
+
+# --- Task: fit + report (histograma, target entero) ---
+
+
+def _make_df_int_target(spark, n, seed, n_classes):
+    """x0, x1 informativas; x2 independiente; y entero con ``n_classes`` clases.
+
+    ``y = sum(int(score > t) for t in thresholds)`` (ver ``planted``).
+    """
+    thresholds = tuple(
+        round(-2.0 + i * 4 / (n_classes - 1), 4) for i in range(n_classes - 1)
+    )
+    data = make_planted(
+        n,
+        seed,
+        [
+            Feature("x0", "informative"),
+            Feature("x1", "informative"),
+            Feature("x2", "independent"),
+        ],
+        Target(kind="linear", noise=0.1, thresholds=thresholds),
+    )
+    return to_spark_df(spark, data)
+
+
+class TrivialFactory:
+    """Adaptador trivial determinista para tests (sin entrenamiento real).
+
+    - Clasificación: ``probability`` = [0.5] * n_classes → AUC = 0.5
+      (todos los empates).
+    - Continua: ``prediction`` = media del target → R² = 0.0.
+    """
+
+    name = "trivial"
+
+    def __init__(self, n_classes: int = 2):
+        self._n_classes = n_classes
+
+    def train(self, df_vec, task, label_col):
+        if task in ("classifier_binary", "classifier_multiclass"):
+            probs = F.array(*[F.lit(0.5) for _ in range(self._n_classes)])
+            return df_vec.withColumn("probability", probs)
+        mean = df_vec.select(F.mean(label_col)).first()[0]
+        return df_vec.withColumn("prediction", F.lit(float(mean)))
+
+
+def test_report_multiclass_int_target(spark):
+    """Target entero de 15 clases (auto → multiclase) + report: macro AUC = 0.5."""
+    df = _make_df_int_target(spark, n=4000, seed=5, n_classes=15)
+    model = JMIMSelector(
+        target="y", max_features=5, screen_top_k=10, significance="chi2", seed=42
+    ).fit(df)
+    assert model.task == "classifier_multiclass"
+    rep = model.report(df, model=TrivialFactory(n_classes=15))
+    assert rep.task == "classifier_multiclass"
+    assert rep.metric_selected == pytest.approx(0.5)
+
+
+def test_report_binary_int_target_explicit(spark):
+    """Target entero de 2 clases declarado ``classifier_binary`` → AUC binaria = 0.5."""
+    df = _make_df_int_target(spark, n=4000, seed=6, n_classes=2)
+    model = JMIMSelector(
+        target="y",
+        task="classifier_binary",
+        max_features=5,
+        screen_top_k=10,
+        significance="chi2",
+        seed=42,
+    ).fit(df)
+    assert model.task == "classifier_binary"
+    rep = model.report(df, model=TrivialFactory(n_classes=2))
+    assert rep.task == "classifier_binary"
+    assert rep.metric_selected == pytest.approx(0.5)
+
+
+def test_report_continuous_declared_on_int(spark):
+    """Target entero de 25 clases declarado ``continuous`` → R² = 0.0 (media)."""
+    df = _make_df_int_target(spark, n=4000, seed=7, n_classes=25)
+    model = JMIMSelector(
+        target="y",
+        task="continuous",
+        max_features=5,
+        screen_top_k=10,
+        significance="chi2",
+        seed=42,
+    ).fit(df)
+    assert model.task == "continuous"
+    rep = model.report(df, model=TrivialFactory())
+    assert rep.task == "continuous"
+    assert rep.metric_selected == pytest.approx(0.0)

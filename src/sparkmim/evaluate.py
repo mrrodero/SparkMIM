@@ -1,14 +1,23 @@
 """Evaluación agnóstica al modelo (Hito 6).
 
-``report`` entrena un clasificador/regresor sobre las features seleccionadas
-(comparado con el baseline de todas las features) y devuelve métricas y la
-curva de eficiencia. Sin sklearn:
+La lógica de evaluación no entrena modelos directamente: resuelve la task
+declarada (regla compartida ``schema.resolve_task``; ``task=None`` →
+``"auto"``), codifica las columnas categóricas, ensambla el vector
+``features`` y pasa el df vectorizado a una ``ModelFactory``
+(``model_factory.py``) — la costura entre la lógica de evaluación y los
+backends (docs/DESIGN.md §2, §7). La fábrica entrena y devuelve el df de
+predicciones; la métrica se computa en el driver.
 
-- ``gbt`` (default): ``GradientBoostedClassifier``/``GradientBoostedRegressor``
-  de spark.ml.
-- ``xgboost`` / ``lightgbm``: extras opcionales (import perezoso).
-
-AUC multiclase (macro, one-vs-rest) y R² se calculan en el driver.
+- AUC (binaria: Mann-Whitney; multiclase: macro, one-vs-rest) y R².
+- ``report``: AUC/R² con las features seleccionadas, con todas las features
+  (baseline) y la curva de eficiencia. Coste: 2 + |ranking| entrenamientos.
+- Costura ``ModelFactory``: adaptadores ``GbtFactory`` (default),
+  ``XgboostFactory`` y ``LightgbmFactory`` (extras opcionales, import
+  perezoso); para tests, un adaptador trivial determinista sin Spark ML.
+- Task: la declarada llega resuelta (3 valores) o se resuelve aquí con la
+  regla ``auto``. El vocabulario legacy ``"classification"`` /
+  ``"regression"`` sigue aceptándose y se mapea a ``"classifier_multiclass"``
+  / ``"continuous"``.
 """
 
 from __future__ import annotations
@@ -18,9 +27,12 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from pyspark.sql import DataFrame
-from pyspark.sql.types import DoubleType, FloatType, StringType
+from pyspark.sql.types import StringType
 
 from scipy.stats import rankdata
+
+from .model_factory import ModelFactory, make_model_factory
+from .schema import _CLASSIFICATION_TASKS, resolve_task
 
 __all__ = [
     "EvaluationReport",
@@ -81,18 +93,34 @@ def r2_score(y_true, y_pred) -> float:
 
 
 # ----------------------------------------------------------------------
-# Preparación de features/target (codificación de categóricas).
+# Resolución de task y preparación (codificación de categóricas).
 # ----------------------------------------------------------------------
-def _detect_task(df: DataFrame, target_col: str) -> str:
-    """'classification' | 'regression' según el dtype del target."""
-    dtype = df.schema[target_col].dataType
-    if isinstance(dtype, StringType):
-        return "classification"
-    if isinstance(dtype, (FloatType, DoubleType)):
-        return "regression"
-    # Entero: clasificación si pocas clases distintas.
-    n_unique = int(df.select(target_col).distinct().count())
-    return "classification" if n_unique <= 20 else "regression"
+# Vocabulario legacy de evaluate: se mapea a la task resuelta.
+_LEGACY_TASKS = {
+    "classification": "classifier_multiclass",
+    "regression": "continuous",
+}
+# Tareas ya resueltas: se dejan pasar sin revalidar (la validación contra
+# los datos la hizo ``resolve_task`` en la etapa 0 o en la llamada
+# standalone).
+_RESOLVED_TASKS = ("classifier_binary", "classifier_multiclass", "continuous")
+
+
+def _normalize_task(task, df: DataFrame, target_col: str) -> str:
+    """Resuelve la task declarada con la regla compartida.
+
+    ``None`` → ``"auto"``; el vocabulario legacy (``"classification"`` /
+    ``"regression"``) se mapea a la task resuelta; las tareas ya resueltas
+    se dejan pasar. ``"auto"`` y cualquier otro valor se validan contra
+    los datos (``schema.resolve_task``).
+    """
+    if task is None:
+        task = "auto"
+    if task in _LEGACY_TASKS:
+        return _LEGACY_TASKS[task]
+    if task in _RESOLVED_TASKS:
+        return task
+    return resolve_task(df, target_col, task)
 
 
 def _encode_columns(df: DataFrame, cols: Sequence[str]) -> Tuple[DataFrame, List[str]]:
@@ -113,80 +141,46 @@ def _encode_columns(df: DataFrame, cols: Sequence[str]) -> Tuple[DataFrame, List
     return df_enc, out_cols
 
 
-# ----------------------------------------------------------------------
-# Entrenamiento (agnóstico al modelo).
-# ----------------------------------------------------------------------
-def _train_model(
-    df: DataFrame,
-    feature_cols: Sequence[str],
-    label_col: str,
-    model_name: str,
-    task: str,
-):
-    """Entrena el modelo y devuelve ``(model, assembler, df_enc)``."""
-    from pyspark.ml.feature import VectorAssembler
-    from pyspark.ml.classification import GBTClassifier
-    from pyspark.ml.regression import GBTRegressor
-
-    df_enc, enc_cols = _encode_columns(df, feature_cols)
-    assembler = VectorAssembler(inputCols=enc_cols, outputCol="features")
-    df_vec = assembler.transform(df_enc)
-
-    if model_name == "gbt":
-        if task == "classification":
-            est = GBTClassifier(featuresCol="features", labelCol=label_col)
-        else:
-            est = GBTRegressor(featuresCol="features", labelCol=label_col)
-    elif model_name == "xgboost":
-        est = _xgboost_estimator(task, label_col)
-    elif model_name == "lightgbm":
-        est = _lightgbm_estimator(task, label_col)
-    else:
-        raise ValueError(f"model_name debe ser 'gbt', 'xgboost' o 'lightgbm' (recibido {model_name!r})")
-
-    model = est.fit(df_vec)
-    return model, assembler, df_enc
-
-
-def _xgboost_estimator(task: str, label_col: str):
-    if task == "classification":
-        from pyspark.ml.classification import XGBoostClassifier  # type: ignore
-        return XGBoostClassifier(featuresCol="features", labelCol=label_col)
-    from pyspark.ml.regression import XGBoostRegressor  # type: ignore
-    return XGBoostRegressor(featuresCol="features", labelCol=label_col)
-
-
-def _lightgbm_estimator(task: str, label_col: str):
-    if task == "classification":
-        from pyspark.ml.classification import LightGBMClassifier  # type: ignore
-        return LightGBMClassifier(featuresCol="features", labelCol=label_col)
-    from pyspark.ml.regression import LightGBMRegressor  # type: ignore
-    return LightGBMRegressor(featuresCol="features", labelCol=label_col)
+def _resolve_model(model: "str | ModelFactory") -> ModelFactory:
+    """Resuelve el backend: nombre → adaptador (costura ``ModelFactory``)."""
+    if isinstance(model, str):
+        return make_model_factory(model)
+    return model
 
 
 # ----------------------------------------------------------------------
-# Entrenamiento + evaluación.
+# Entrenamiento + evaluación (detrás de la costura ModelFactory).
 # ----------------------------------------------------------------------
 def train_and_evaluate(
     df: DataFrame,
     feature_cols: Sequence[str],
     target_col: str,
-    model_name: str = "gbt",
+    model: "str | ModelFactory" = "gbt",
     task: str | None = None,
 ) -> float:
-    """Entrena sobre ``feature_cols`` y devuelve AUC (cl.) o R² (reg.)."""
-    if task is None:
-        task = _detect_task(df, target_col)
+    """Entrena sobre ``feature_cols`` y devuelve AUC (cl.) o R² (reg.).
+
+    ``model``: nombre de backend (``"gbt"``/``"xgboost"``/``"lightgbm"``) o
+    una ``ModelFactory`` (costura, ``model_factory.py``).
+
+    Coste: 1 entrenamiento. Si ``task`` es None se resuelve con la regla
+    ``auto`` (vocabulario legacy aceptado).
+    """
+    task = _normalize_task(task, df, target_col)
+    factory = _resolve_model(model)
     # Target: codifica si es string.
     df_t, label_col = _encode_columns(df, [target_col]) if isinstance(
         df.schema[target_col].dataType, StringType
     ) else (df, target_col)
-    model, assembler, df_enc = _train_model(df_t, feature_cols, label_col, model_name, task)
-    # ``df_enc`` ya tiene las features codificadas; re-aplica el assembler.
-    df_vec = assembler.transform(df_enc)
-    df_pred = model.transform(df_vec)
+    # Features: codifica si son string y ensambla el vector.
+    df_enc, enc_cols = _encode_columns(df_t, feature_cols)
+    from pyspark.ml.feature import VectorAssembler
 
-    if task == "classification":
+    df_vec = VectorAssembler(inputCols=enc_cols, outputCol="features").transform(df_enc)
+    # Costura: la fábrica entrena y devuelve el df de predicciones.
+    df_pred = factory.train(df_vec, task, label_col)
+
+    if task in _CLASSIFICATION_TASKS:
         pdf = df_pred.select(label_col, "probability").toPandas()
         y_true = pdf[label_col].to_numpy(dtype=int)
         # Cada valor de ``probability`` es un vector (DenseVector); a lista de floats.
@@ -210,16 +204,19 @@ def efficiency_curve(
     df: DataFrame,
     feature_order: Sequence[str],
     target_col: str,
-    model_name: str = "gbt",
+    model: "str | ModelFactory" = "gbt",
     task: str | None = None,
 ) -> List[Tuple[int, float]]:
-    """AUC/R² al añadir features en el orden ``feature_order`` (top-k)."""
-    if task is None:
-        task = _detect_task(df, target_col)
+    """AUC/R² al añadir features en el orden ``feature_order`` (top-k).
+
+    Coste: ``len(feature_order)`` entrenamientos.
+    """
+    task = _normalize_task(task, df, target_col)
+    factory = _resolve_model(model)
     curve: List[Tuple[int, float]] = []
     for k in range(1, len(feature_order) + 1):
         metric = train_and_evaluate(
-            df, list(feature_order[:k]), target_col, model_name, task
+            df, list(feature_order[:k]), target_col, factory, task
         )
         curve.append((k, float(metric)))
     return curve
@@ -255,7 +252,7 @@ def report(
     selected_features: Sequence[str],
     ranking: Sequence[str],
     target_col: str,
-    model_name: str = "gbt",
+    model: "str | ModelFactory" = "gbt",
     task: str | None = None,
     all_features: Sequence[str] | None = None,
 ) -> EvaluationReport:
@@ -264,22 +261,26 @@ def report(
     - ``metric_selected``: AUC/R² con las features seleccionadas.
     - ``metric_all``: AUC/R² con todas las features (baseline).
     - ``efficiency_curve``: AUC/R² al añadir features en el orden ``ranking``.
+
+    ``model``: nombre de backend o una ``ModelFactory`` (costura).
+    ``task``: task resuelta del Target (3 valores); ``None`` → ``"auto"``.
+    Coste: ``2 + len(ranking)`` entrenamientos.
     """
-    if task is None:
-        task = _detect_task(df, target_col)
+    task = _normalize_task(task, df, target_col)
     if all_features is None:
         all_features = [c for c in df.columns if c != target_col]
+    factory = _resolve_model(model)
 
     metric_selected = train_and_evaluate(
-        df, list(selected_features), target_col, model_name, task
+        df, list(selected_features), target_col, factory, task
     )
     metric_all = train_and_evaluate(
-        df, list(all_features), target_col, model_name, task
+        df, list(all_features), target_col, factory, task
     )
-    curve = efficiency_curve(df, list(ranking), target_col, model_name, task)
+    curve = efficiency_curve(df, list(ranking), target_col, factory, task)
 
     return EvaluationReport(
-        model_name=model_name,
+        model_name=factory.name,
         task=task,
         metric_selected=metric_selected,
         metric_all=metric_all,
