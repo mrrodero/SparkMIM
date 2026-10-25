@@ -1,5 +1,7 @@
 """Tests unitarios de entropía/MI/CMI con valores analíticos (nats)."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -111,6 +113,27 @@ def test_conditional_mi_2d_is_mutual_information():
         - entropy_from_counts(table)
     )
     assert conditional_mi(table) == pytest.approx(expected, abs=1e-12)
+
+
+def test_empty_cells_raise_no_runtime_warnings():
+    """Celdas vacías no emiten RuntimeWarning (log neutro en ceros).
+
+    Antes del log neutro, ``_log_nonzero`` devolvía -inf y las celdas vacías
+    evaluaban ``0 * -inf`` (entropía) y ``-inf - (-inf)`` (CMI), con
+    RuntimeWarnings y NaN que había que filtrar a posteriori.
+    """
+    table = np.zeros((3, 3, 2), dtype=np.int64)
+    table[0, 0, 0] = 5
+    table[1, 1, 1] = 7
+    table[0, 2, 0] = 2
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        h = entropy_from_counts(table.sum(axis=1))
+        mi = mutual_information(table[:, :, 0])
+        cmi = conditional_mi(table)
+    assert h > 0.0
+    assert mi >= -1e-12
+    assert cmi >= -1e-12
 
 
 def test_conditional_mi_4d_matches_entropy_definition():

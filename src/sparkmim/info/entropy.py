@@ -4,7 +4,9 @@ Todas las funciones operan sobre tablas de conteos enteras (int64) y devuelven
 valores en **nats** (log natural), vectorizadas con numpy.
 
 Convenciones numéricas:
-- ``0 · log 0 = 0`` (los celdas vacías no contribuyen).
+- ``0 · log 0 = 0``: el log es **neutro (0.0) en ceros**, así que las celdas
+  vacías no contribuyen sin producir ``0 * -inf`` ni restas de infinitos
+  (ni RuntimeWarnings).
 - CMI puede salir ligeramente negativa por error de coma flotante (~1e-16);
   no se recorta aquí para no ocultar errores de entrada.
 """
@@ -22,8 +24,13 @@ __all__ = [
 
 
 def _log_nonzero(p: np.ndarray) -> np.ndarray:
-    """log(p) con -inf donde p == 0 (sin warnings)."""
-    out = np.full(p.shape, -np.inf, dtype=np.float64)
+    """log(p) con 0.0 neutro donde p == 0 (sin infinitos ni warnings).
+
+    Usar neutro (en vez de -inf) evita ``0 * -inf = NaN`` en los términos
+    ``p * log p`` y ``-inf - (-inf)`` en las combinaciones de logaritmos de
+    la CMI cuando una celda y sus marginales son a la vez cero.
+    """
+    out = np.zeros(p.shape, dtype=np.float64)
     np.log(p, out=out, where=p > 0)
     return out
 
@@ -42,10 +49,9 @@ def entropy_from_counts(counts: np.ndarray) -> float:
     if n == 0:
         return 0.0
     p = counts / n
-    log_p = _log_nonzero(p)
-    terms = p * log_p
-    # 0 · log 0 = 0: se descartan los términos no finitos (p == 0).
-    return float(-np.where(np.isfinite(terms), terms, 0.0).sum())
+    # 0 · log 0 = 0: el log neutro en ceros hace que los términos p == 0
+    # valgan exactamente 0.
+    return float(-(p * _log_nonzero(p)).sum())
 
 
 def joint_entropy_from_counts(table: np.ndarray) -> float:
@@ -92,13 +98,14 @@ def conditional_mi(table: np.ndarray) -> float:
     # Broadcasting: pz gana 2 ejes al frente (X, Y); pxz gana 1 eje tras X;
     # pyz gana 1 eje al frente (X). Con k = 0, pz es el escalar 1.0 y
     # pxz/pyz son la propia tabla: idéntico a MI(X;Y).
+    # El log neutro en ceros garantiza términos finitos (p == 0 -> 0).
     terms = p * (
         _log_nonzero(p)
         + _log_nonzero(pz)[None, None]
         - _log_nonzero(pxz)[:, None]
         - _log_nonzero(pyz)[None, :]
     )
-    return float(np.where(np.isfinite(terms), terms, 0.0).sum())
+    return float(terms.sum())
 
 
 def mutual_information(table_xy: np.ndarray) -> float:
