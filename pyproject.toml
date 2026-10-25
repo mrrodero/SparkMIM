@@ -38,3 +38,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# El temporal de pytest vive dentro de .tmp_spark (gitignoreado): el JVM de
+# Spark y pytest no ensucian la raíz del repo.
+basetemp = ".tmp_spark/pytest"

@@ -24,6 +24,13 @@ benchmarks/.tmp/
 
 # JDK local (Temurin 17) y artefactos de instalación
 jdk17/
+winutils/
+.tmp_spark/
+
+# Extracción de nativas del JVM (lz4, snappy) y perf data
+liblz4-java-*.so*
+*snappyjava.dll
+hsperfdata_*/
 _pipcache/
 _pip_test/
 _pyspark-*.tar.gz
