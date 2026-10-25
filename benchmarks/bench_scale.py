@@ -1,9 +1,13 @@
-"""Benchmark de escala (Hito 7).
+"""Benchmark de escala — CLI local (Hito 7 / DBR 15.4).
 
-Ejecuta una rejilla ``n × N`` en ``local[8]``, mide wall-time por etapa y
-memoria del driver, y escribe un CSV.
+La implementación vive en ``sparkmim.benchmarks.scale`` (incluida en el
+wheel); este script solo añade la CLI local: rejilla, CSV, sesión Spark
+local y staging en un ``TemporaryDirectory`` del sistema de archivos local
+(con limpieza).
 
-Meta (PLAN §9/§11): n=10⁶, N=200 < 15 min end-to-end.
+**No usar en notebook de Databricks** (crea una sesión Spark local):
+importar ``sparkmim.benchmarks.run_point`` del wheel. Ver
+``benchmarks/README.md``.
 
 Uso:
     python benchmarks/bench_scale.py --csv out.csv
@@ -11,7 +15,7 @@ Uso:
     python benchmarks/bench_scale.py --n 100000 --N 100   # un punto
 
 Nota: requiere JDK 17 (Arrow). Este script lo configura automáticamente
-(si existe ``sparkmim/jdk17``).
+(si existe ``jdk17``).
 """
 
 from __future__ import annotations
@@ -20,10 +24,8 @@ import argparse
 import csv
 import os
 import sys
-import time
+import tempfile
 from pathlib import Path
-
-import numpy as np
 
 # --- JDK 17 (Arrow) ---
 _REPO = Path(__file__).resolve().parent.parent
@@ -33,22 +35,28 @@ if _JDK17.exists():
     os.environ["PATH"] = str(_JDK17 / "bin") + os.pathsep + os.environ.get("PATH", "")
 os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
-# --- Import del generador (mismo directorio) ---
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from synthetic import generate  # noqa: E402
+# --- winutils + hadoop.dll (Windows; ver tools/fetch_winutils.py) ---
+_WINUTILS = _REPO / "winutils"
+if (_WINUTILS / "bin").exists() and not os.environ.get("HADOOP_HOME"):
+    os.environ["HADOOP_HOME"] = str(_WINUTILS)
+    os.environ["PATH"] = str(_WINUTILS / "bin") + os.pathsep + os.environ.get("PATH", "")
+
+# --- TEMP local (Windows): el launcher de PySpark escribe a %TEMP%; si no
+# es escribible, el arranque de la sesión se queda a la espera. ---
+if os.name == "nt":
+    _SPARK_TMP = _REPO / ".tmp_spark"
+    _SPARK_TMP.mkdir(exist_ok=True)
+    os.environ["TEMP"] = str(_SPARK_TMP)
+    os.environ["TMP"] = str(_SPARK_TMP)
+
+# --- Import del package (implementación) ---
+_SRC = str(_REPO / "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 from pyspark.sql import SparkSession  # noqa: E402
-from sparkmim import JMIMSelector  # noqa: E402
 
-# --- Memoria del driver ---
-try:
-    import psutil  # type: ignore
-
-    def _driver_mem_mb() -> float:
-        return psutil.Process(os.getpid()).memory_info().rss / 1e6
-except Exception:  # pragma: no cover
-    def _driver_mem_mb() -> float:
-        return -1.0  # no disponible.
+from sparkmim.benchmarks.scale import run_point  # noqa: E402
 
 
 def _make_spark(master: str) -> SparkSession:
@@ -61,63 +69,6 @@ def _make_spark(master: str) -> SparkSession:
         .config("spark.driver.host", "127.0.0.1")
         .getOrCreate()
     )
-
-
-def _to_df(spark: SparkSession, data: dict) -> "SparkSession.DataFrame":
-    cols = [c for c in data if c != "y"]
-    y = data["y"]
-    rows = [
-        tuple(float(v) for v in row) + (int(y[i]),)
-        for i, row in enumerate(zip(*[data[c] for c in cols]))
-    ]
-    return spark.createDataFrame(rows, cols + ["y"])
-
-
-def run_point(
-    spark: SparkSession,
-    n: int,
-    N: int,
-    n_informative: int,
-    n_redundant: int,
-    seed: int,
-    max_features: int,
-) -> dict:
-    """Ejecuta un punto (n, N) y devuelve las métricas."""
-    data = generate(
-        n=n,
-        n_features=N,
-        n_informative=n_informative,
-        n_redundant=n_redundant,
-        seed=seed,
-        task="classification",
-    )
-    df = _to_df(spark, data)
-    t0 = time.perf_counter()
-    model = JMIMSelector(
-        target="y",
-        max_features=max_features,
-        screen_top_k=200,
-        significance="chi2",
-        seed=seed,
-    ).fit(df)
-    wall = time.perf_counter() - t0
-    timings = model.timings_
-    return {
-        "n": n,
-        "N": N,
-        "n_informative": n_informative,
-        "n_redundant": n_redundant,
-        "etapa0_s": round(timings.get("etapa0", 0.0), 3),
-        "etapa1_s": round(timings.get("etapa1", 0.0), 3),
-        "etapa2_s": round(timings.get("etapa2", 0.0), 3),
-        "etapa3_s": round(timings.get("etapa3", 0.0), 3),
-        "total_s": round(wall, 3),
-        "driver_mem_mb": round(_driver_mem_mb(), 1),
-        "n_selected": len(model.selected_features),
-        "informative_recuperadas": sum(
-            1 for f in model.selected_features if f.startswith("x")
-        ),
-    }
 
 
 def main() -> None:
@@ -148,18 +99,21 @@ def main() -> None:
     for n in n_vals:
         for N in N_vals:
             print(f"--- n={n:,} N={N} ---", flush=True)
-            row = run_point(
-                spark,
-                n=n,
-                N=N,
-                n_informative=args.n_informative,
-                n_redundant=args.n_redundant,
-                seed=args.seed,
-                max_features=args.max_features,
-            )
+            # Staging local: directorio temporal con limpieza automática.
+            with tempfile.TemporaryDirectory(prefix="sparkmim-bench-") as tmp:
+                row = run_point(
+                    spark,
+                    n=n,
+                    N=N,
+                    n_informative=args.n_informative,
+                    n_redundant=args.n_redundant,
+                    seed=args.seed,
+                    max_features=args.max_features,
+                    staging_path=tmp,
+                )
             rows.append(row)
             print(
-                f"    total={row['total_s']}s "
+                f"    staging={row['staging_s']}s total={row['total_s']}s "
                 f"(e0={row['etapa0_s']} e1={row['etapa1_s']} "
                 f"e2={row['etapa2_s']} e3={row['etapa3_s']}) "
                 f"mem={row['driver_mem_mb']}MB "
@@ -168,10 +122,11 @@ def main() -> None:
             )
     spark.stop()
 
-    # Escribir CSV.
+    # Escribir CSV (sin la ruta temporal de staging).
     if rows:
+        fieldnames = [k for k in rows[0].keys() if k != "staging_path"]
         with open(args.csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
         print(f"\nCSV escrito en {args.csv}", flush=True)
