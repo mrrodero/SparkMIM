@@ -5,7 +5,7 @@ tablas en pases únicos, control de significancia (FDR) y evaluación agnóstica
 al modelo. Sin sklearn.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Núcleo de entropía y tablas (hitos 1-2).
 from .info.entropy import (

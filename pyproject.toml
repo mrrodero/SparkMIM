@@ -7,7 +7,7 @@ name = "sparkmim"
 version = "0.2.0"
 description = "Framework PySpark distribuido de feature selection informacional (JMIM/CMIM)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 license = { text = "MIT" }
 authors = [{ name = "SparkMIM" }]
 keywords = ["feature-selection", "mutual-information", "JMIM", "CMIM", "pyspark", "distributed"]
@@ -16,12 +16,15 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
+# Matriz validada para Databricks 15.4 LTS (Spark 3.5.0) según la matriz
+# corporativa sgt-apm3972-databricksdeps. En DBR el wheel se instala con
+# --no-deps para no reemplazar los paquetes administrados por Databricks.
 dependencies = [
-    "pyspark>=3.5",
-    "numpy>=1.24",
-    "pandas>=2.0",
-    "scipy>=1.10",
-    "pyarrow>=4.0",
+    "pyspark==3.5.0",
+    "numpy==1.23.5",
+    "pandas==1.5.3",
+    "scipy==1.11.1",
+    "pyarrow==14.0.1",
 ]
 
 [project.optional-dependencies]
