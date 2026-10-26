@@ -1,14 +1,19 @@
 """Etapa 0 — Esquema y preprocesado (pase 0a + mapeo 0b).
 
-Pase 0a (UN ``mapInPandas`` sobre el df original): por partición y por
-columna numérica, cuantiles ``i/b`` (``pandas.quantile``) + min/max; por
-columna categórica, ``value_counts()``. Emite filas compactas ``(fid, kind,
-...)`` → agregación mínima → driver. Evita N llamadas a ``approxQuantile`` y
-N ``groupBy`` (O(N) jobs).
+Pase 0a (UN ``mapInPandas`` sobre el df original): por batch, min/max y
+cuantiles ``i/b`` de las columnas numéricas (cálculo vectorizado con
+``np.partition``, interpolación lineal idéntica a ``pandas.quantile``;
+columnas con NaN caen al camino pandas con ``dropna``) y ``value_counts()``
+de las categóricas. Salida **compacta**: una fila ``(fid, min_v, max_v,
+quantiles[])`` por columna numérica por batch y una fila ``(fid, cat_value,
+count)`` por valor categórico. Evita N llamadas a ``approxQuantile`` y N
+``groupBy`` (O(N) jobs) y reduce el output del UDF un factor ~b+1 respecto
+al formato largo anterior (una fila por cuantil).
 
-Driver: cuantiles globales ponderados por ``n_part`` → fronteras de bins
-(puntos medios entre valores frontera, evita bins degenerados); top-C
-categorías por frecuencia + código "other".
+Driver: min/max global (mín/máx sobre los batches) + cuantiles globales
+ponderados por ``n_part`` → fronteras de bins (puntos medios entre valores
+frontera, evita bins degenerados); top-C categorías por frecuencia + código
+"other".
 
 Pase 0b (mapeo sin shuffle): cadenas ``when`` por columna aplicando bins y
 códigos; missing → código dedicado (o drop). Target según la Task resuelta:
@@ -28,6 +33,7 @@ import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
+    ArrayType,
     DoubleType,
     IntegerType,
     LongType,
@@ -41,20 +47,20 @@ from .schema import Schema, build_schema, resolve_bins, resolve_task
 
 __all__ = ["PreparedData", "prepare", "resolve_specs", "apply_mapping"]
 
-# Kinds de las filas emitidas por el pase 0a.
-_KIND_QUANTILE = 1  # cuantil (fid, q_index, q_value, n_part)
-_KIND_MINMAX = 2  # min/max (fid, which, value)
-_KIND_CATEGORY = 3  # categoría (fid, cat_value, count)
+# Kinds de las filas emitidas por el pase 0a (formato compacto).
+_KIND_NUMERIC = 1  # (fid, min_v, max_v, quantiles[]) — una por columna por batch
+_KIND_CATEGORY = 3  # (fid, cat_value, count) — una por valor por batch
 
 StatsSchema = StructType(
     [
         StructField("fid", IntegerType()),
         StructField("kind", IntegerType()),
-        StructField("q_index", IntegerType()),
-        StructField("q_value", DoubleType()),
         StructField("cat_value", StringType()),
         StructField("count", LongType()),
         StructField("n_part", LongType()),
+        StructField("min_v", DoubleType()),
+        StructField("max_v", DoubleType()),
+        StructField("quantiles", ArrayType(DoubleType())),
     ]
 )
 
@@ -81,6 +87,28 @@ def _cat_to_str(value, dtype: str) -> str:
     return str(value)
 
 
+def _quantile_interp(
+    col: np.ndarray, b: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Cuantiles ``i/b`` (``i=1..b-1``) de ``col`` sin NaNs.
+
+    Misma semántica que ``pandas.Series.quantile`` (método ``linear``):
+    índice ``q*(n-1)`` interpolando linealmente entre los ordenados
+    adyacentes, calculado con ``np.partition`` (sin ordenación completa).
+
+    Returns:
+        ``(pos, vlo, vhi)``: posiciones fraccionales y los dos ordenados
+        adyacentes (mismos índices, listas alineadas).
+    """
+    n = col.shape[0]
+    pos = (n - 1) * (np.arange(1, b) / b)
+    klo = np.floor(pos).astype(np.int64)
+    khi = np.minimum(np.ceil(pos).astype(np.int64), n - 1)
+    vlo = np.take(np.partition(col, klo), klo)
+    vhi = np.take(np.partition(col, khi), khi)
+    return pos, vlo, vhi
+
+
 def _stats_partition(
     pdf: pd.DataFrame,
     columns: Sequence[Tuple[str, str, str]],  # (name, kind, dtype)
@@ -88,41 +116,108 @@ def _stats_partition(
     bins_target: int,
     is_target: Sequence[bool],
 ):
-    """Emite las filas de estadísticas de una partición (pase 0a)."""
+    """Filas compactas de estadísticas de un batch (pase 0a).
+
+    Una fila ``_KIND_NUMERIC`` por columna numérica (``min_v``, ``max_v`` y
+    cuantiles ``i/b`` en un array; ``[]`` si la columna es constante) y una
+    ``_KIND_CATEGORY`` por (columna, valor). Columnas numéricas sin NaNs en
+    el batch: cálculo vectorizado (``_quantile_interp``); con NaNs: camino
+    pandas con ``dropna`` (misma semántica que antes).
+    """
     n_part = len(pdf)
-    for fid, (name, kind, dtype) in enumerate(columns):
-        if kind == "numeric":
-            s = pdf[name]
-            if not pd.api.types.is_numeric_dtype(s):
-                # Override: columna string con valores numéricos.
-                s = pd.to_numeric(s, errors="coerce")
-            b = bins_target if is_target[fid] else bins
-            valid = s.dropna()
-            if len(valid) == 0:
-                continue
-            vmin = float(valid.min())
-            vmax = float(valid.max())
-            yield (fid, _KIND_MINMAX, 0, vmin, None, 1, n_part)
-            yield (fid, _KIND_MINMAX, 1, vmax, None, 1, n_part)
-            if b > 1 and vmin < vmax:
-                qs = valid.quantile([i / b for i in range(1, b)])
-                for i, q in enumerate(qs, start=1):
-                    yield (fid, _KIND_QUANTILE, i, float(q), None, 1, n_part)
+    rows: List[tuple] = []
+    num_idx = [i for i, (_nm, kind, _d) in enumerate(columns) if kind == "numeric"]
+    if num_idx and n_part > 0:
+        X = pdf.iloc[:, num_idx].to_numpy(dtype=np.float64)  # (rows, Nn)
+        n_rows = X.shape[0]
+        has_nan = np.isnan(X)
+        if has_nan.any():
+            # Camino conservador: cualquier NaN en el batch → pandas por
+            # columna (semántica ``dropna`` idéntica a la anterior).
+            for fi in num_idx:
+                name, kind, dtype = columns[fi]
+                s = pdf[name]
+                if not pd.api.types.is_numeric_dtype(s):
+                    # Override: columna string con valores numéricos.
+                    s = pd.to_numeric(s, errors="coerce")
+                b = bins_target if is_target[fi] else bins
+                valid = s.dropna()
+                if len(valid) == 0:
+                    continue
+                vmin = float(valid.min())
+                vmax = float(valid.max())
+                qs: List[float] = []
+                if b > 1 and vmin < vmax and len(valid) > 1:
+                    qs = [float(q) for q in valid.quantile([i / b for i in range(1, b)])]
+                rows.append((fi, _KIND_NUMERIC, None, None, n_part, vmin, vmax, qs))
         else:
+            # Fast path: sin NaN en el batch → min/max/cuantiles vectorizados
+            # por grupo de ``b`` (features vs target pueden diferir).
+            vmin = X.min(axis=0)
+            vmax = X.max(axis=0)
+            groups: Dict[int, List[int]] = {}
+            for j, fi in enumerate(num_idx):
+                b_col = bins_target if is_target[fi] else bins
+                if (vmin[j] < vmax[j]) and b_col > 1 and n_rows > 1:
+                    groups.setdefault(b_col, []).append(j)
+            quant_by_j: Dict[int, np.ndarray] = {}
+            for b_col, js in groups.items():
+                Xg = X[:, js]
+                pos = (n_rows - 1) * (np.arange(1, b_col) / b_col)
+                klo = np.floor(pos).astype(np.int64)
+                khi = np.minimum(np.ceil(pos).astype(np.int64), n_rows - 1)
+                Plo = np.partition(Xg, klo, axis=0)
+                Phi = np.partition(Xg, khi, axis=0)
+                q = Plo[klo, :] + (Phi[khi, :] - Plo[klo, :]) * (pos - klo)[:, None]
+                for t, j in enumerate(js):
+                    quant_by_j[j] = q[:, t]
+            for j, fi in enumerate(num_idx):
+                if vmin[j] < vmax[j]:
+                    rows.append(
+                        (
+                            fi,
+                            _KIND_NUMERIC,
+                            None,
+                            None,
+                            n_part,
+                            float(vmin[j]),
+                            float(vmax[j]),
+                            [float(v) for v in quant_by_j.get(j, [])],
+                        )
+                    )
+                else:
+                    rows.append(
+                        (
+                            fi,
+                            _KIND_NUMERIC,
+                            None,
+                            None,
+                            n_part,
+                            float(vmin[j]),
+                            float(vmax[j]),
+                            [],
+                        )
+                    )
+    for i, (name, kind, dtype) in enumerate(columns):
+        if kind != "numeric":
             vc = pdf[name].dropna().value_counts()
             for val, c in vc.items():
-                yield (fid, _KIND_CATEGORY, -1, 0.0, _cat_to_str(val, dtype), int(c), n_part)
+                rows.append(
+                    (i, _KIND_CATEGORY, _cat_to_str(val, dtype), int(c), n_part, None, None, None)
+                )
+    return rows
 
 
-_STATS_COLS = ["fid", "kind", "q_index", "q_value", "cat_value", "count", "n_part"]
+_STATS_COLS = ["fid", "kind", "cat_value", "count", "n_part", "min_v", "max_v", "quantiles"]
 _STATS_DTYPES = {
     "fid": "int64",
     "kind": "int64",
-    "q_index": "int64",
-    "q_value": "float64",
     "cat_value": "object",
     "count": "int64",
     "n_part": "int64",
+    "min_v": "float64",
+    "max_v": "float64",
+    "quantiles": "object",
 }
 
 
@@ -140,9 +235,17 @@ def _stats_pass(df: DataFrame, schema: Schema, config, n_rows: int) -> DataFrame
 
     def _func(iterator):
         for pdf in iterator:
-            rows = list(_stats_partition(pdf, columns, b, config.bins_target, is_target))
+            rows = _stats_partition(pdf, columns, b, config.bins_target, is_target)
             out = pd.DataFrame(rows, columns=_STATS_COLS)
-            yield out.astype(_STATS_DTYPES)
+            for col, dt in _STATS_DTYPES.items():
+                if dt == "object":
+                    continue
+                if dt.startswith("int"):
+                    # None en columnas int (p. ej. ``count`` de filas numéricas).
+                    out[col] = out[col].fillna(0).astype(dt)
+                else:
+                    out[col] = out[col].astype(dt)
+            yield out
 
     return df.mapInPandas(_func, schema=StatsSchema)
 
@@ -202,8 +305,9 @@ def resolve_specs(
 
     Args:
         schema: esquema con tipos (specs sin rellenar).
-        stats_rows: filas ``(fid, kind, q_index, q_value, cat_value, count,
-            n_part)`` del pase 0a.
+        stats_rows: filas compactas del pase 0a:
+            ``(fid, kind, cat_value, count, n_part, min_v, max_v,
+            quantiles[])``.
         config: ``SelectorConfig``.
         n_rows: nº total de filas (para ``bins="auto"``).
 
@@ -214,11 +318,17 @@ def resolve_specs(
     quantiles: Dict[int, Dict[int, List[Tuple[float, int]]]] = {}
     categories: Dict[int, Dict[str, int]] = {}
 
-    for fid, kind, q_index, q_value, cat_value, count, n_part in stats_rows:
-        if kind == _KIND_MINMAX:
-            minmax.setdefault(fid, {})[q_index] = q_value
-        elif kind == _KIND_QUANTILE:
-            quantiles.setdefault(fid, {}).setdefault(q_index, []).append((q_value, n_part))
+    for fid, kind, cat_value, count, n_part, min_v, max_v, quant_vals in stats_rows:
+        if kind == _KIND_NUMERIC:
+            if min_v is None or max_v is None:
+                continue
+            mm = minmax.setdefault(fid, {})
+            # Mín/máx GLOBAL: el pase 0a emite min/max por batch.
+            mm[0] = min_v if 0 not in mm else min(mm[0], min_v)
+            mm[1] = max_v if 1 not in mm else max(mm[1], max_v)
+            if quant_vals:
+                for i, qv in enumerate(quant_vals, start=1):
+                    quantiles.setdefault(fid, {}).setdefault(i, []).append((qv, n_part))
         elif kind == _KIND_CATEGORY:
             categories.setdefault(fid, {})[cat_value] = categories.get(fid, {}).get(cat_value, 0) + count
 

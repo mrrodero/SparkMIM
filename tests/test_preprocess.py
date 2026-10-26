@@ -246,3 +246,102 @@ def test_int_target_declared_continuous(spark):
     spec = prep.schema.target
     assert spec.kind == "numeric"
     assert spec.n_codes == 10
+
+
+# ---------------------------------------------------------------------------
+# Pase 0a compacto: equivalencia bit a bit de _stats_partition con pandas
+# ---------------------------------------------------------------------------
+
+
+def _numeric_rows(pdf, n_cols, bins, bins_target=None, is_target=None):
+    """Filas numéricas de ``_stats_partition`` como dict {col: (min, max, qs)}."""
+    from sparkmim.preprocess import _KIND_NUMERIC, _stats_partition
+
+    cols = [(f"c{i}", "numeric", "float64") for i in range(n_cols)]
+    target = is_target is not None
+    if target:
+        cols.append(("y", "numeric", "float64"))
+    it = ([False] * n_cols) + ([True] if target else [])
+    rows = _stats_partition(pdf, cols, bins, bins_target or bins, it)
+    out = {}
+    for r in rows:
+        if r[1] == _KIND_NUMERIC:
+            idx = r[0]
+            name = cols[idx][0]
+            out[name] = (r[5], r[6], list(r[7]))
+    return out
+
+
+def test_stats_partition_bitwise_vs_pandas():
+    """Fast path (sin NaN): min/max y cuantiles idénticos a pandas, bit a bit."""
+    import pandas as pd
+
+    rng = np.random.default_rng(7)
+    n = 5_000
+    a = rng.normal(size=n)
+    b = rng.exponential(2.0, size=n)
+    pdf = pd.DataFrame({"c0": a, "c1": b})
+    got = _numeric_rows(pdf, 2, bins=13)
+    for name, arr in (("c0", a), ("c1", b)):
+        mn, mx, qs = got[name]
+        assert mn == float(pd.Series(arr).min())
+        assert mx == float(pd.Series(arr).max())
+        ref = [float(q) for q in pd.Series(arr).quantile([i / 13 for i in range(1, 13)])]
+        np.testing.assert_array_equal(np.asarray(qs), np.asarray(ref))
+
+
+def test_stats_partition_constant_column_empty_quantiles():
+    import pandas as pd
+
+    pdf = pd.DataFrame({"c0": np.full(100, 3.5), "c1": np.arange(100, dtype=float)})
+    got = _numeric_rows(pdf, 2, bins=10)
+    assert got["c0"][2] == []
+    assert got["c0"][0] == got["c0"][1] == 3.5
+    assert len(got["c1"][2]) == 9
+
+
+def test_stats_partition_nan_fallback_matches_dropna():
+    """Con NaNs: fallback pandas, cuantiles sobre ``dropna`` (bit a bit)."""
+    import pandas as pd
+
+    rng = np.random.default_rng(11)
+    n = 2_000
+    a = rng.normal(size=n)
+    a[[10, 500, 1500]] = np.nan
+    pdf = pd.DataFrame({"c0": a})
+    got = _numeric_rows(pdf, 1, bins=10)
+    valid = pd.Series(a).dropna()
+    mn, mx, qs = got["c0"]
+    assert mn == float(valid.min())
+    assert mx == float(valid.max())
+    ref = [float(q) for q in valid.quantile([i / 10 for i in range(1, 10)])]
+    np.testing.assert_array_equal(np.asarray(qs), np.asarray(ref))
+
+
+def test_stats_partition_all_nan_column_emits_no_row():
+    import pandas as pd
+
+    pdf = pd.DataFrame({"c0": np.full(50, np.nan)})
+    got = _numeric_rows(pdf, 1, bins=10)
+    assert "c0" not in got
+
+
+def test_stats_partition_target_uses_bins_target():
+    """El target usa ``bins_target`` (aqui 4), las features, ``bins`` (8)."""
+    import pandas as pd
+
+    rng = np.random.default_rng(3)
+    n = 1_000
+    pdf = pd.DataFrame({"c0": rng.normal(size=n), "y": rng.normal(size=n)})
+    from sparkmim.preprocess import _KIND_NUMERIC, _stats_partition
+
+    rows = _stats_partition(
+        pdf,
+        [("c0", "numeric", "float64"), ("y", "numeric", "float64")],
+        bins=8,
+        bins_target=4,
+        is_target=[False, True],
+    )
+    by_fid = {r[0]: r for r in rows if r[1] == _KIND_NUMERIC}
+    assert len(by_fid[0][7]) == 7  # c0: 8 bins → 7 cuantiles
+    assert len(by_fid[1][7]) == 3  # y: 4 bins → 3 cuantiles
