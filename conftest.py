@@ -31,6 +31,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
 _JDK17 = Path(__file__).resolve().parent / "jdk17"
@@ -53,3 +55,19 @@ if os.name == "nt":
     _SPARK_TMP.mkdir(exist_ok=True)
     os.environ["TEMP"] = str(_SPARK_TMP)
     os.environ["TMP"] = str(_SPARK_TMP)
+else:
+    _SPARK_TMP = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _spark_tmp_cleanup():
+    """Al arrancar la sesión de pytest, borra los residuos que Spark/JVM
+    dejan en ``.tmp_spark`` cuando una sesión muere sin teardown limpio
+    (``spark-*``, ``blockmgr-*``, nativas lz4/snappy, ``hsperfdata_*``):
+    sin esto, cada ejecución acumulaba decenas de MB (509 MB en una
+    jornada). Ver ``sparkmim.benchmarks.scale.clean_stale_tmp``.
+    """
+    from sparkmim.benchmarks.scale import clean_stale_tmp
+
+    clean_stale_tmp(_SPARK_TMP)
+    yield

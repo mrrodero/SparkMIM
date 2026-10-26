@@ -39,6 +39,22 @@ install*.log
 spark_err*.log
 pip_verbose.log
 
+# Temporales que caen en la raíz si %TEMP% no es escribible (JDK/Python
+# hacen fallback al directorio de trabajo): `tmp*` (JVM), `pip-*` (pip),
+# `pytest-of-*` y basetemp suelto de pytest.
+tmp*/
+pip-install-*/
+pip-wheel-*/
+pip-build-*/
+pip-build-env-*/
+pip-ephem-wheel-cache-*/
+pip-modern-metadata-*/
+pip-unpack-*/
+pip-metadata-*/
+pip-build-tracker-*/
+pytest-of-*/
+benchmarks.tmp/
+
 # IDE / SO
 .idea/
 .vscode/

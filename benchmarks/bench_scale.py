@@ -48,6 +48,8 @@ if os.name == "nt":
     _SPARK_TMP.mkdir(exist_ok=True)
     os.environ["TEMP"] = str(_SPARK_TMP)
     os.environ["TMP"] = str(_SPARK_TMP)
+else:
+    _SPARK_TMP = None
 
 # --- Import del package (implementación) ---
 _SRC = str(_REPO / "src")
@@ -56,7 +58,11 @@ if _SRC not in sys.path:
 
 from pyspark.sql import SparkSession  # noqa: E402
 
-from sparkmim.benchmarks.scale import run_point  # noqa: E402
+from sparkmim.benchmarks.scale import clean_stale_tmp, run_point  # noqa: E402
+
+# Limpia los residuos de ejecuciones anteriores ANTES de crear la sesión
+# (spark-*/blockmgr-*/nativas del JVM que no hicieron teardown).
+clean_stale_tmp(_SPARK_TMP)
 
 
 def _make_spark(master: str) -> SparkSession:

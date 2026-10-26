@@ -39,8 +39,10 @@ paridad con ``tests/planted.py``.
 
 from __future__ import annotations
 
+import shutil
 import time
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -55,6 +57,7 @@ from .synthetic import _feature_names, generate_chunks
 __all__ = [
     "DEFAULT_BATCH_BYTES",
     "DEFAULT_STAGING_ROOT",
+    "clean_stale_tmp",
     "default_staging_path",
     "run_point",
 ]
@@ -175,6 +178,29 @@ def _staged_generate_df(
         ).parquet(staging_path)
         first = False
     return spark.read.parquet(staging_path)
+
+
+def clean_stale_tmp(spark_tmp: Path) -> None:
+    """Borra los residuos que Spark/JVM dejan en el directorio temporal de
+    Spark (``.tmp_spark``) cuando una sesión muere sin teardown limpio:
+    ``spark-*`` (directorios de worker), ``blockmgr-*``, extracciones de
+    nativas (``liblz4-java-*``, ``*snappyjava.dll``) y ``hsperfdata_*``.
+
+    Seguro llamarlo **antes** de crear una sesión (no hay Spark corriendo):
+    una sesión viva solo usa sus propios directorios. Sin esto, cada
+    ejecución acumulaba decenas de MB (509 MB en una jornada de tests).
+    """
+    if spark_tmp is None or not spark_tmp.exists():
+        return
+    for pattern in ("spark-*", "blockmgr-*", "liblz4-java-*", "*snappyjava.dll", "hsperfdata_*"):
+        for p in spark_tmp.glob(pattern):
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _driver_mem_mb() -> float:
