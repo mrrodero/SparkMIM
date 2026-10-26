@@ -25,12 +25,16 @@ debajo del límite RPC — y la entrada se lee una sola vez con
 
 Memoria
 -------
-``generate()`` sigue conservando todos los arrays en el driver (~2,08 GB
-decimales a 10M×25) más el buffer de staging del lote en curso. Dimensionar
-la memoria del driver en consecuencia (baseline de 10M×25 en el cluster
-C2: pico de driver 2465 MB). Si la memoria del driver resultase
-insuficiente, una variante futura disk-backed (``np.memmap``) preservaría
-exactamente la secuencia NumPy.
+La entrada se genera con :func:`generate_chunks` (``synthetic``) y se
+stagea **chunk a chunk**: el driver solo conserva un chunk de filas
+(``O(chunk_rows × N)`` ≈ el presupuesto de bytes del lote, ~16 MiB) en
+lugar de los arrays completos (~2,08 GB decimales a 10M×25). El driver de
+la rejilla ya no necesita dimensionarse por ``n × N``: el caso N=1000,
+que moría por memoria del kernel, queda desbloqueado. La secuencia del
+RNG es por columna (``SeedSequence.spawn``), determinista e invariante a
+``chunk_rows`` (ver ``synthetic.generate_chunks``); los valores difieren
+de ``generate()`` (stream único), que se mantiene como referencia de
+paridad con ``tests/planted.py``.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ from pyspark.sql.types import DoubleType, LongType, StructField, StructType
 
 from sparkmim import JMIMSelector
 
-from .synthetic import generate
+from .synthetic import _feature_names, generate_chunks
 
 __all__ = [
     "DEFAULT_BATCH_BYTES",
@@ -130,6 +134,49 @@ def _staged_df(
     return spark.read.parquet(staging_path)
 
 
+def _staged_generate_df(
+    spark: SparkSession,
+    n: int,
+    n_features: int,
+    n_informative: int,
+    n_redundant: int,
+    seed: int,
+    staging_path: str,
+    batch_bytes: int = DEFAULT_BATCH_BYTES,
+) -> DataFrame:
+    """Genera la entrada **chunk a chunk** (``generate_chunks``) y stagea
+    cada chunk en parquet inmediatamente (``append``), sin conservar los
+    arrays completos en el driver.
+
+    Mismo contrato que :func:`_staged_df` (schema explícito, lotes acotados
+    por ``batch_bytes``) pero con memoria ``O(chunk × N)``: cada chunk
+    generado se convierte a pandas/Arrow y se escribe antes de generar el
+    siguiente.
+    """
+    import pandas as pd
+
+    cols = _feature_names(n_features, n_informative, n_redundant)
+    schema = _benchmark_schema(cols)
+    step = _rows_per_batch(n_features, batch_bytes)
+    first = True
+    for chunk in generate_chunks(
+        n=n,
+        n_features=n_features,
+        n_informative=n_informative,
+        n_redundant=n_redundant,
+        seed=seed,
+        task="classification",
+        chunk_rows=step,
+    ):
+        block = {c: np.ascontiguousarray(chunk[c], dtype=np.float64) for c in cols}
+        block["y"] = np.ascontiguousarray(chunk["y"], dtype=np.int64)
+        spark.createDataFrame(pd.DataFrame(block), schema).write.mode(
+            "overwrite" if first else "append"
+        ).parquet(staging_path)
+        first = False
+    return spark.read.parquet(staging_path)
+
+
 def _driver_mem_mb() -> float:
     """RSS del proceso driver en MiB (``-1.0`` si psutil no está)."""
     if psutil is None:  # pragma: no cover
@@ -150,8 +197,9 @@ def run_point(
 ) -> dict:
     """Ejecuta un punto ``(n, N)`` y devuelve las métricas.
 
-    La entrada se genera con ``generate()`` y se **stagea** en parquet
-    (lotes pandas/Arrow) en ``staging_path``; el selector solo ve el
+    La entrada se genera **chunk a chunk** (:func:`generate_chunks`) y se
+    stagea en parquet (lotes pandas/Arrow) en ``staging_path`` sin
+    conservar los arrays completos en el driver; el selector solo ve el
     resultado de ``spark.read.parquet``.
 
     Args:
@@ -181,17 +229,17 @@ def run_point(
         staging_path = default_staging_path()
 
     t_stage = time.perf_counter()
-    data = generate(
+    df = _staged_generate_df(
+        spark,
         n=n,
         n_features=N,
         n_informative=n_informative,
         n_redundant=n_redundant,
         seed=seed,
-        task="classification",
+        staging_path=staging_path,
+        batch_bytes=batch_bytes,
     )
-    df = _staged_df(spark, data, staging_path, batch_bytes)
     staging_s = time.perf_counter() - t_stage
-    del data  # libera los arrays completos (~GB) antes del fit
 
     t0 = time.perf_counter()
     model = JMIMSelector(

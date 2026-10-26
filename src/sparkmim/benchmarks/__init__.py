@@ -11,12 +11,13 @@ from .scale import (
     default_staging_path,
     run_point,
 )
-from .synthetic import generate
+from .synthetic import generate, generate_chunks
 
 __all__ = [
     "DEFAULT_BATCH_BYTES",
     "DEFAULT_STAGING_ROOT",
     "default_staging_path",
     "generate",
+    "generate_chunks",
     "run_point",
 ]
