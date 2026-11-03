@@ -405,7 +405,18 @@ def _categorical_expr(col, spec, config):
 
 
 def apply_mapping(df: DataFrame, schema: Schema, config) -> DataFrame:
-    """Pase 0b: mapeo sin shuffle a códigos enteros (``df_prep``)."""
+    """Pase 0b: mapeo sin shuffle a códigos enteros (``df_prep``).
+
+    El mapeo se emite como **un único ``select``** (un solo ``Project``
+    de N+1 campos), no como N ``withColumn`` encadenados: cada
+    ``withColumn`` apila un ``Project`` completo de N+1 campos sobre el
+    anterior, de modo que (a) la fila entera se re-materializa en cada
+    uno de los N niveles (tráfico de memoria O(N²) por fila), (b) el plan
+    crece en O(N²) nodos (análisis/optimización/serialización caros; en
+    Spark Connect el plan se envía por RPC en cada acción) y (c) cada
+    nivel apilado impide que la proyección entera se codegen en un solo
+    stage.
+    """
     if not schema.ready():
         raise ValueError("El esquema no está resuelto (llamar resolve_specs antes)")
     cols = list(schema.features) + [schema.target]
@@ -415,16 +426,17 @@ def apply_mapping(df: DataFrame, schema: Schema, config) -> DataFrame:
         for spec in cols:
             notnull = notnull & F.col(spec.name).isNotNull()
         out = out.filter(notnull)
+    # Un único Project con todas las columnas mapeadas (conserva el orden
+    # features + target y los nombres originales vía alias).
+    exprs = []
     for spec in cols:
         col = F.col(spec.name)
         if spec.kind == "numeric":
             expr = _numeric_expr(col, spec, config)
         else:
             expr = _categorical_expr(col, spec, config)
-        out = out.withColumn(spec.name, expr.cast("int"))
-    # Conservar solo columnas necesarias (features + target).
-    keep = [spec.name for spec in cols]
-    return out.select(*keep)
+        exprs.append(expr.cast("int").alias(spec.name))
+    return out.select(*exprs)
 
 
 def prepare(df: DataFrame, config) -> PreparedData:
