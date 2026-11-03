@@ -38,10 +38,19 @@ finally:
     dbutils.fs.rm(staging, recurse=True)   # el paquete no limpia solo
 ```
 
-- **Staging**: cada lote es un `write.mode("append").parquet` materializado
-  (payload ~16 MiB raw por defecto, `batch_bytes` configurable; a N=25 ≈
-  80k filas/lote, muy por debajo del límite RPC de 256 MiB). La entrada se
-  lee una sola vez con `spark.read.parquet`. **No elevar**
+- **Staging**: la entrada se genera chunk a chunk (`generate_chunks`) y
+  cada chunk se envía como `LocalRelation` (payload ≤128 MiB raw por
+  defecto, `batch_bytes` configurable; a N=25 ≈ 640k filas/chunk, ~1.9× de
+  margen frente al límite RPC de 256 MiB). Por defecto (`single_write=True`)
+  todos los chunks se escriben en **un único job** (union balanceada + un
+  solo commit); el coste de staging medido en DBR escalaba con el *número*
+  de jobs de escritura (~25–80 s por job de commit, frente a ~70 ms de
+  trabajo real), así que un solo job lo reduce a una sola vez. El precio:
+  el driver JVM retiene la tabla completa como `LocalRelation` (`n × (N+1) × 8`
+  bytes; ≤16,1 GB en el punto más grande de la rejilla). Con
+  `single_write=False` se escribe un job por chunk (memoria del driver
+  acotada a un chunk; útil en drivers con poca RAM). La entrada se lee una
+  sola vez con `spark.read.parquet`. **No elevar**
   `spark.rpc.message.maxSize`: el staging ya resuelve el payload.
 - **Limpieza**: el paquete no asume el global `dbutils` del notebook y no
   borra paths compartidos arbitrarios; el entorno limpia (receta de arriba).

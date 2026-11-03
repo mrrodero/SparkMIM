@@ -49,20 +49,35 @@ N=200 (2,86 s/feature a N=200 vs 0,63 a N=25; 18 s/feature a N=500).
 
 ### 3.1 Staging en parquet por lotes (la palanca mayor)
 
-`run_point` ya no expande las filas a una lista Python: los slices de los
-arrays se convierten en DataFrames pandas pequeños (schema explícito,
-features `DoubleType`, target `LongType`) y se escriben **inmediatamente**
-con `write.mode("append").parquet` en lotes de 16 MiB (~80k filas a N=25),
-y la entrada es `spark.read.parquet`. Consecuencias:
+`run_point` ya no expande las filas a una lista Python: la entrada se
+genera **chunk a chunk** (`generate_chunks`; RNG por columna invariante al
+tamaño de chunk, test incluido) y cada chunk se convierte en un DataFrame
+pandas pequeño (schema explícito, features `DoubleType`, target `LongType`)
+que viaja como `LocalRelation`. Dos palancas:
 
-- El input es un **DataSource distribuido** (una partición por parte
-  parquet, ~130 partes a 10M×25): los pases 0a/0b se ejecutan en **todos
-  los workers**, no en 1 core.
-- Cada envío al RPC pesa ≤16 MiB → **resuelve el fallo de
-  `spark.rpc.message.maxSize`** (256 MiB; 582,5 MB medidos a 10M×25) sin
-  tocar ninguna config de Spark.
-- Sin `union`, sin acumulación de DataFrames locales; el directorio de
-  staging es único por ejecución (un fallo no contamina el reintento).
+- **Un solo job de escritura** (`single_write=True`, por defecto): los
+  chunks se unen en árbol balanceado y se escriben con un único
+  `write.overwrite.parquet`. El coste medido en DBR 15.4 escalaba con el
+  *número* de jobs de escritura (~25–80 s por job de commit en el volumen,
+  frente a ~70 ms de trabajo real: 20 104 s de staging en 10M×200 con el
+  modo por lotes, 12 037 s en 1M×1000), así que un solo job lo reduce a
+  una sola vez. `single_write=False` conserva el modo por lotes (un job
+  por chunk) para drivers con poca RAM.
+- **Presupuesto de bytes maximizado** (`batch_bytes` 16 → 128 MiB por
+  defecto): cada chunk pesa ≤~140 MiB con overhead Arrow (~1,9× de margen
+  frente al límite RPC de 256 MiB), por lo que a N=25 son ~640k filas por
+  chunk en vez de ~80k (menos RPCs y menos partes parquet).
+
+Consecuencias:
+
+- El input es un **DataSource distribuido** (las partes del único job de
+  escritura): los pases 0a/0b se ejecutan en **todos los workers**, no en
+  1 core.
+- El payload de cada `createDataFrame` pesa ≤~140 MiB → **resuelve el
+  fallo de `spark.rpc.message.maxSize`** (256 MiB; 582,5 MB medidos a
+  10M×25) sin tocar ninguna config de Spark.
+- El directorio de staging es único por ejecución (un fallo no contamina
+  el reintento).
 
 Es la mejora estructural: los números de e0 anteriores no son extrapolables
 a la nueva implementación porque la forma en que se distribuye el trabajo
@@ -102,8 +117,36 @@ con b=13 bins), i.e. un factor ~14× más que ahora (una fila por columna
 por batch). Localmente el paso está limitado por el *startup* del job
 (~4 s fijos), por lo que la ganancia local es modesta; en DBR el output
 del UDF cruza la red y se agrega en el driver, donde el factor 14× sí se
-nota. El mapeo (cadenas `when`) es inalterado: 1,2/1,2/2,4/8,9 s a
-N=25/50/100/200 (antes 1,1/1,2/2,6/9,4).
+nota. El mapeo (cadenas `when`) se reescribió en §3.3.
+
+### 3.3 `apply_mapping` como un único `Project` (plan O(N) en vez de O(N²))
+
+El pase 0b se emitía como **N `withColumn` encadenados**: cada uno apila un
+`Project` completo de N+1 campos sobre el anterior. Medición local
+(n=1000, `local[8]`; `scratch/diag_e0_decomp.py`, OLD = cadena de
+`withColumn`, NEW = un único `select`):
+
+| N    | construcción del plan OLD (s) | NEW (s) | e0 OLD (s) |
+|------|-------------------------------|---------|------------|
+| 25   | 0,6                           | 0,5     | 16,8       |
+| 200  | 85,2                          | 2,8     | 125,7      |
+| 1000 | 642,2                         | 6,0     | 905,7      |
+
+- **Construcción del plan O(N²)**: 642 s *solo para construir el plan* a
+  N=1000 (análisis/optimización/serialización del árbol de `Project`s;
+  en Spark Connect el plan viaja por RPC en cada acción). Nuevo: 6 s, con
+  crecimiento lineal.
+- **Codegen**: con los `Project` apilados la proyección entera **no**
+  entraba en whole-stage (fallback a intérprete por método, visible en el
+  log como `CodegenFallback: ... too large` en la cadena de `doForward`);
+  un único `Project` se codegen en un solo stage.
+- **Tráfico O(N²) por fila**: cada nivel apilado re-materializaba la fila
+  entera (N+1 campos) para escribir su columna.
+
+La semántica es idéntica (mismo filtro `not-null`, mismos mapeos, mismos
+nombres de salida; los tests semánticos de `tests/test_preprocess.py` —
+frecuencias de binning, códigos de missing, cardinalidad, target binned —
+pasan sin cambios sobre el nuevo `prepare()`).
 
 ## 4. Otras optimizaciones
 
@@ -122,8 +165,9 @@ calcula por chunk (misma fórmula).
 `run_point` ahora stagea **cada chunk generado** a parquet
 (`_staged_generate_df`), sin conservar los arrays completos: la memoria
 del driver pasa de `O(n × N)` a `O(chunk × N)` (≈ el presupuesto de bytes
-del lote, 16 MiB por defecto). Medición local (n=500k, N=100, driver del
-mismo proceso):
+del lote, 128 MiB por defecto, más las copias transitorias del buffer
+Arrow y del payload RPC — pico de unos 500 MB, holgado en un driver de
+64 GB). Medición local (n=500k, N=100, driver del mismo proceso):
 
 | Ruta | pico RSS (driver) |
 |------|-------------------|

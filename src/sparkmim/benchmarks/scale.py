@@ -67,10 +67,17 @@ __all__ = [
 #: disponible en el compute.
 DEFAULT_STAGING_ROOT = "dbfs:/tmp/sparkmim-benchmark"
 
-#: Presupuesto de bytes *raw* por lote de staging: 16 MiB (a N=25 equivale
-#: a ~80k filas). Conservador respecto al límite RPC de 256 MiB: deja mucho
-#: margen para el overhead Arrow/Connect de cada envío.
-DEFAULT_BATCH_BYTES = 16 * 1024 * 1024
+#: Presupuesto de bytes *raw* por lote de staging: 128 MiB.
+#:
+#: Cada lote es un ``write.append.parquet`` separado (un job Spark + un
+#: commit ACID en el volumen), así que el costo de staging escala con el
+#: *número* de lotes, no solo con los bytes: medido en DBR 15.4 (UC
+#: Volume), los lotes de 16 MiB costaban ~25–80 s cada uno (n=10M, N=200:
+#: 245 lotes → 20 104 s de staging vs 452 s de etapa 0). Con 128 MiB el
+#: nº de lotes baja 8× (31 en ese punto) manteniendo margen ~1.9× frente
+#: al límite RPC ``spark.rpc.message.maxSize`` (256 MiB): el payload
+#: Arrow de un lote es el raw + overhead de schema/buffers (~10 %).
+DEFAULT_BATCH_BYTES = 128 * 1024 * 1024
 
 try:  # psutil es opcional (no siempre disponible en el runtime de Databricks).
     import psutil
@@ -137,6 +144,21 @@ def _staged_df(
     return spark.read.parquet(staging_path)
 
 
+def _balanced_union(dfs: List[DataFrame]) -> DataFrame:
+    """``union`` de todos los DataFrames en árbol **balanceado**.
+
+    La unión en cadena (``d1.union(d2).union(d3) ...``) produce un plan de
+    profundidad ``O(K)``; el árbol balanceado la reduce a ``O(log K)``
+    (irrelevante para ``K`` pequeño, pero barato de hacer).
+    """
+    rels = list(dfs)
+    while len(rels) > 1:
+        rels = [rels[i].union(rels[i + 1]) for i in range(0, len(rels) - 1, 2)] + (
+            [rels[-1]] if len(rels) % 2 else []
+        )
+    return rels[0]
+
+
 def _staged_generate_df(
     spark: SparkSession,
     n: int,
@@ -146,23 +168,43 @@ def _staged_generate_df(
     seed: int,
     staging_path: str,
     batch_bytes: int = DEFAULT_BATCH_BYTES,
+    single_write: bool = True,
 ) -> DataFrame:
-    """Genera la entrada **chunk a chunk** (``generate_chunks``) y stagea
-    cada chunk en parquet inmediatamente (``append``), sin conservar los
-    arrays completos en el driver.
+    """Genera la entrada **chunk a chunk** (``generate_chunks``) y la
+    stagea en parquet en ``staging_path``.
 
-    Mismo contrato que :func:`_staged_df` (schema explícito, lotes acotados
-    por ``batch_bytes``) pero con memoria ``O(chunk × N)``: cada chunk
-    generado se convierte a pandas/Arrow y se escribe antes de generar el
-    siguiente.
+    Dos modos (parámetro ``single_write``):
+
+    * ``single_write=True`` (por defecto): cada chunk se envía como
+      ``LocalRelation`` (``createDataFrame`` pandas/Arrow, payload acotado
+      por ``batch_bytes``) y **todos** se escriben en un único job
+      (``union`` balanceada + un solo ``write``). El modo por lotes
+      (append) pagaba el overhead de un job de escritura por chunk
+      (~5–25 s por job de commit en el volumen UC de Databricks; los
+      benchmarks de la rejilla tardaban hasta 5,6 h solo en staging);
+      un solo job reduce ese coste a una sola vez. El precio: el driver
+      JVM retiene la tabla completa como ``LocalRelation``
+      (``n × (N + 1) × 8`` bytes; ≤ 16,1 GB en el punto más grande de la
+      rejilla, n=10M/N=200) hasta que el job termina.
+    * ``single_write=False`` (escape para drivers con poca memoria):
+      cada chunk se escribe en su propio job (``append``); el driver JVM
+      solo retiene un chunk, a cambio del overhead de un job por chunk.
+
+    En ambos modos el driver Python solo retiene ``O(chunk × N)``: cada
+    chunk se convierte a pandas/Arrow antes de generar el siguiente.
     """
     import pandas as pd
 
     cols = _feature_names(n_features, n_informative, n_redundant)
     schema = _benchmark_schema(cols)
     step = _rows_per_batch(n_features, batch_bytes)
-    first = True
-    for chunk in generate_chunks(
+
+    def _to_df(chunk: Dict[str, np.ndarray]) -> DataFrame:
+        block = {c: np.ascontiguousarray(chunk[c], dtype=np.float64) for c in cols}
+        block["y"] = np.ascontiguousarray(chunk["y"], dtype=np.int64)
+        return spark.createDataFrame(pd.DataFrame(block), schema)
+
+    chunks = generate_chunks(
         n=n,
         n_features=n_features,
         n_informative=n_informative,
@@ -170,13 +212,20 @@ def _staged_generate_df(
         seed=seed,
         task="classification",
         chunk_rows=step,
-    ):
-        block = {c: np.ascontiguousarray(chunk[c], dtype=np.float64) for c in cols}
-        block["y"] = np.ascontiguousarray(chunk["y"], dtype=np.int64)
-        spark.createDataFrame(pd.DataFrame(block), schema).write.mode(
-            "overwrite" if first else "append"
-        ).parquet(staging_path)
-        first = False
+    )
+    if not single_write:
+        first = True
+        for chunk in chunks:
+            _to_df(chunk).write.mode("overwrite" if first else "append").parquet(
+                staging_path
+            )
+            first = False
+        return spark.read.parquet(staging_path)
+
+    rels: List[DataFrame] = [_to_df(chunk) for chunk in chunks]
+    df = _balanced_union(rels)
+    del rels
+    df.write.mode("overwrite").parquet(staging_path)
     return spark.read.parquet(staging_path)
 
 
@@ -220,13 +269,14 @@ def run_point(
     max_features: int,
     staging_path: Optional[str] = None,
     batch_bytes: int = DEFAULT_BATCH_BYTES,
+    single_write: bool = True,
 ) -> dict:
     """Ejecuta un punto ``(n, N)`` y devuelve las métricas.
 
     La entrada se genera **chunk a chunk** (:func:`generate_chunks`) y se
-    stagea en parquet (lotes pandas/Arrow) en ``staging_path`` sin
-    conservar los arrays completos en el driver; el selector solo ve el
-    resultado de ``spark.read.parquet``.
+    stagea en parquet en ``staging_path`` (por defecto en un único job de
+    escritura; ver ``single_write``); el selector solo ve el resultado de
+    ``spark.read.parquet``.
 
     Args:
         spark: ``SparkSession`` (clásica) o cliente Spark Connect.
@@ -242,8 +292,15 @@ def run_point(
             la limpia (``dbutils.fs.rm`` en Databricks; ``TemporaryDirectory``
             en el CLI local). Un reintento tras fallo debe usar un
             directorio nuevo.
-        batch_bytes: presupuesto de bytes raw por lote
-            (:data:`DEFAULT_BATCH_BYTES` = 16 MiB).
+        batch_bytes: presupuesto de bytes raw por chunk
+            (:data:`DEFAULT_BATCH_BYTES` = 128 MiB; acota el payload RPC
+            de cada ``createDataFrame`` y el grano del job de escritura).
+        single_write: ``True`` (por defecto) escribe todos los chunks en
+            un único job (el driver JVM retiene la tabla completa como
+            ``LocalRelation``: ``n × (N + 1) × 8`` bytes). ``False``
+            escribe un job por chunk (memoria del driver acotada a un
+            chunk, a cambio del overhead por job; en Databricks ~5–25 s
+            por job).
 
     Returns:
         Dict de métricas. ``total_s`` es solo el ``fit`` del selector
@@ -264,6 +321,7 @@ def run_point(
         seed=seed,
         staging_path=staging_path,
         batch_bytes=batch_bytes,
+        single_write=single_write,
     )
     staging_s = time.perf_counter() - t_stage
 
